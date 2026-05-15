@@ -7,10 +7,13 @@ volatility_window = 100
 
 [transport]
 ring_buffer_capacity = 65536
+snapshot_ring_capacity = 16384
+quote_ring_capacity = 16384
 
 [runtime]
 ws_cpu_core = 2
 processor_cpu_core = 3
+strategy_cpu_core = 4
 
 [logging]
 level = "info"
@@ -20,3 +23,22 @@ file = "logs/spreadara.log"
 initial_backoff_ms = 500
 max_backoff_ms = 30000
 max_attempts = 5
+
+[strategy]
+gamma = 0.1
+k = 1.5
+horizon = 1.0
+min_tick = 0.1
+volatility_floor = 0.0001
+baseline_volatility = 0.0002
+vol_widen_multiplier = 1.5
+depth_threshold = 10.0
+inventory_skew_threshold_pct = 30.0
+max_inventory = 5.0
+max_skew_bps = 25.0
+emergency_unwind_pct = 90.0
+funding_rate = 0.0
+min_requote_ms = 50
+price_move_ticks_threshold = 2
+quote_lifetime_ms = 5000
+quote_qty = 0.01

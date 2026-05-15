@@ -7,12 +7,14 @@
 #include "market_data/binance_ws_client.hpp"
 #include "market_data/orderbook.hpp"
 #include "market_data/volatility.hpp"
+#include "strategy/signal_aggregator.hpp"
 
 namespace spreadara::market_data {
 
 class TickProcessor {
 public:
-    TickProcessor(const infra::Config& cfg, EventRing& ring);
+    TickProcessor(const infra::Config& cfg, EventRing& ring,
+                  strategy::SnapshotRing* snap_ring = nullptr);
     ~TickProcessor();
 
     TickProcessor(const TickProcessor&) = delete;
@@ -32,6 +34,7 @@ private:
 
     const infra::Config& cfg_;
     EventRing& ring_;
+    strategy::SnapshotRing* snap_ring_;
     OrderBook book_;
     TickVolatility vol_;
     double last_trade_price_{0.0};

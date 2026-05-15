@@ -1,6 +1,7 @@
 #include "market_data/tick_processor.hpp"
 
 #include <chrono>
+#include <cstring>
 
 #include <flatbuffers/flatbuffers.h>
 #include <spdlog/spdlog.h>
@@ -18,8 +19,9 @@ uint64_t mono_ns() {
 }
 }
 
-TickProcessor::TickProcessor(const infra::Config& cfg, EventRing& ring)
-    : cfg_(cfg), ring_(ring), vol_(static_cast<std::size_t>(cfg.market_data.volatility_window)) {}
+TickProcessor::TickProcessor(const infra::Config& cfg, EventRing& ring, strategy::SnapshotRing* snap_ring)
+    : cfg_(cfg), ring_(ring), snap_ring_(snap_ring),
+      vol_(static_cast<std::size_t>(cfg.market_data.volatility_window)) {}
 
 TickProcessor::~TickProcessor() {
     stop();
@@ -125,6 +127,20 @@ void TickProcessor::emit_snapshot(uint64_t exchange_ts_ms) {
     fbb.Finish(snap);
     spdlog::info("snap mid={:.4f} spread_bps={:.4f} vol={:.6f} bytes={}",
                  book_.mid(), book_.spread_bps(), vol_.stdev_log_returns(), fbb.GetSize());
+
+    if (snap_ring_) {
+        strategy::SnapshotMsg msg;
+        const auto sz = fbb.GetSize();
+        if (sz <= msg.bytes.size()) {
+            msg.size = static_cast<uint16_t>(sz);
+            std::memcpy(msg.bytes.data(), fbb.GetBufferPointer(), sz);
+            if (!snap_ring_->push(msg)) {
+                spdlog::warn("snapshot_ring_full bytes={}", sz);
+            }
+        } else {
+            spdlog::warn("snapshot_oversize bytes={}", sz);
+        }
+    }
 }
 
 }

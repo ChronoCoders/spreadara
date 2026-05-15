@@ -16,9 +16,14 @@ Config load_config(const std::string& path) {
 
     c.transport.ring_buffer_capacity =
         static_cast<std::size_t>(tbl["transport"]["ring_buffer_capacity"].value_or<int64_t>(65536));
+    c.transport.snapshot_ring_capacity =
+        static_cast<std::size_t>(tbl["transport"]["snapshot_ring_capacity"].value_or<int64_t>(16384));
+    c.transport.quote_ring_capacity =
+        static_cast<std::size_t>(tbl["transport"]["quote_ring_capacity"].value_or<int64_t>(16384));
 
     c.runtime.ws_cpu_core = tbl["runtime"]["ws_cpu_core"].value_or(-1);
     c.runtime.processor_cpu_core = tbl["runtime"]["processor_cpu_core"].value_or(-1);
+    c.runtime.strategy_cpu_core = tbl["runtime"]["strategy_cpu_core"].value_or(-1);
 
     c.logging.level = tbl["logging"]["level"].value_or("info");
     c.logging.file = tbl["logging"]["file"].value_or("spreadara.log");
@@ -26,6 +31,25 @@ Config load_config(const std::string& path) {
     c.reconnect.initial_backoff_ms = tbl["reconnect"]["initial_backoff_ms"].value_or(500);
     c.reconnect.max_backoff_ms = tbl["reconnect"]["max_backoff_ms"].value_or(30000);
     c.reconnect.max_attempts = tbl["reconnect"]["max_attempts"].value_or(5);
+
+    c.strategy.gamma = tbl["strategy"]["gamma"].value_or(0.1);
+    c.strategy.k = tbl["strategy"]["k"].value_or(1.5);
+    c.strategy.horizon = tbl["strategy"]["horizon"].value_or(1.0);
+    c.strategy.min_tick = tbl["strategy"]["min_tick"].value_or(0.1);
+    c.strategy.volatility_floor = tbl["strategy"]["volatility_floor"].value_or(0.0001);
+    c.strategy.baseline_volatility = tbl["strategy"]["baseline_volatility"].value_or(0.0002);
+    c.strategy.vol_widen_multiplier = tbl["strategy"]["vol_widen_multiplier"].value_or(1.5);
+    c.strategy.depth_threshold = tbl["strategy"]["depth_threshold"].value_or(10.0);
+    c.strategy.inventory_skew_threshold_pct =
+        tbl["strategy"]["inventory_skew_threshold_pct"].value_or(30.0);
+    c.strategy.max_inventory = tbl["strategy"]["max_inventory"].value_or(5.0);
+    c.strategy.max_skew_bps = tbl["strategy"]["max_skew_bps"].value_or(25.0);
+    c.strategy.emergency_unwind_pct = tbl["strategy"]["emergency_unwind_pct"].value_or(90.0);
+    c.strategy.funding_rate = tbl["strategy"]["funding_rate"].value_or(0.0);
+    c.strategy.min_requote_ms = tbl["strategy"]["min_requote_ms"].value_or(50);
+    c.strategy.price_move_ticks_threshold = tbl["strategy"]["price_move_ticks_threshold"].value_or(2);
+    c.strategy.quote_lifetime_ms = tbl["strategy"]["quote_lifetime_ms"].value_or(5000);
+    c.strategy.quote_qty = tbl["strategy"]["quote_qty"].value_or(0.01);
 
     return c;
 }

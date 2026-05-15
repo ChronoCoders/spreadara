@@ -1,0 +1,12 @@
+namespace spreadara.schemas;
+
+table QuoteUpdate {
+    bid_price:double;
+    ask_price:double;
+    qty:double;
+    timestamp_ns:uint64;
+    inventory:double;
+    skew_bps:double;
+}
+
+root_type QuoteUpdate;

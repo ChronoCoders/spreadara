@@ -33,16 +33,24 @@ find_package(Threads REQUIRED)
 
 find_program(FLATC_EXECUTABLE flatc REQUIRED)
 
-set(FBS_SRC ${CMAKE_SOURCE_DIR}/src/schemas/market_snapshot.fbs)
-set(FBS_GEN ${CMAKE_BINARY_DIR}/generated/market_snapshot_generated.h)
+set(FBS_SRC_SNAPSHOT ${CMAKE_SOURCE_DIR}/src/schemas/market_snapshot.fbs)
+set(FBS_GEN_SNAPSHOT ${CMAKE_BINARY_DIR}/generated/market_snapshot_generated.h)
+set(FBS_SRC_QUOTE ${CMAKE_SOURCE_DIR}/src/schemas/quote_update.fbs)
+set(FBS_GEN_QUOTE ${CMAKE_BINARY_DIR}/generated/quote_update_generated.h)
 file(MAKE_DIRECTORY ${CMAKE_BINARY_DIR}/generated)
 add_custom_command(
-    OUTPUT ${FBS_GEN}
-    COMMAND ${FLATC_EXECUTABLE} --cpp -o ${CMAKE_BINARY_DIR}/generated ${FBS_SRC}
-    DEPENDS ${FBS_SRC}
+    OUTPUT ${FBS_GEN_SNAPSHOT}
+    COMMAND ${FLATC_EXECUTABLE} --cpp -o ${CMAKE_BINARY_DIR}/generated ${FBS_SRC_SNAPSHOT}
+    DEPENDS ${FBS_SRC_SNAPSHOT}
     VERBATIM
 )
-add_custom_target(generate_fbs DEPENDS ${FBS_GEN})
+add_custom_command(
+    OUTPUT ${FBS_GEN_QUOTE}
+    COMMAND ${FLATC_EXECUTABLE} --cpp -o ${CMAKE_BINARY_DIR}/generated ${FBS_SRC_QUOTE}
+    DEPENDS ${FBS_SRC_QUOTE}
+    VERBATIM
+)
+add_custom_target(generate_fbs DEPENDS ${FBS_GEN_SNAPSHOT} ${FBS_GEN_QUOTE})
 
 set(LIB_SOURCES
     src/infra/config.cpp
@@ -52,6 +60,10 @@ set(LIB_SOURCES
     src/market_data/orderbook.cpp
     src/market_data/binance_ws_client.cpp
     src/market_data/tick_processor.cpp
+    src/strategy/inventory_manager.cpp
+    src/strategy/signal_aggregator.cpp
+    src/strategy/spread_model.cpp
+    src/strategy/market_maker.cpp
 )
 
 add_library(spreadara_lib STATIC ${LIB_SOURCES})
@@ -95,6 +107,10 @@ if(BUILD_TESTS)
     add_executable(test_spsc tests/test_spsc.cpp)
     target_link_libraries(test_spsc PRIVATE spreadara_lib GTest::gtest GTest::gtest_main)
     add_test(NAME test_spsc COMMAND test_spsc)
+
+    add_executable(test_strategy tests/test_strategy.cpp)
+    target_link_libraries(test_strategy PRIVATE spreadara_lib GTest::gtest GTest::gtest_main)
+    add_test(NAME test_strategy COMMAND test_strategy)
 endif()
 
 if(BUILD_BENCHMARKS)
