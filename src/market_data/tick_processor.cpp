@@ -74,9 +74,11 @@ void TickProcessor::process_event(const MarketEvent& ev) {
                     book_.apply_snapshot(snap.bids, snap.bid_count,
                                          snap.asks, snap.ask_count, snap.last_update_id);
                 } else {
-                    // WHY: REST failed; the @depth20 stream is a full top-20 snapshot
-                    // every 100ms, so the incoming event itself is a valid recovery point.
-                    spdlog::warn("rest_snapshot_failed_falling_back_to_ws");
+                    // WHY: REST failed (see rest_snapshot_fail log above for detail; in
+                    // geo-blocked regions this is HTTP 451). @depth20 sends a full top-20
+                    // snapshot every 100ms, so the incoming event is itself a valid
+                    // recovery point. See [[spreadara]] memory for Phase 7 proxy plan.
+                    spdlog::info("resync_fallback path=ws stream=depth20@100ms");
                     std::array<PriceLevel, OrderBook::kMaxLevels> b = ev.depth.bids;
                     std::array<PriceLevel, OrderBook::kMaxLevels> a = ev.depth.asks;
                     book_.apply_snapshot(b, ev.depth.bid_count, a, ev.depth.ask_count,
