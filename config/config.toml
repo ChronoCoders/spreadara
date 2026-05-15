@@ -1,0 +1,22 @@
+[market_data]
+symbol = "BTCUSDT"
+ws_base_url = "wss://fstream.binance.com/ws"
+rest_depth_url = "https://fapi.binance.com/fapi/v1/depth"
+depth_levels = 20
+volatility_window = 100
+
+[transport]
+ring_buffer_capacity = 65536
+
+[runtime]
+ws_cpu_core = 2
+processor_cpu_core = 3
+
+[logging]
+level = "info"
+file = "logs/spreadara.log"
+
+[reconnect]
+initial_backoff_ms = 500
+max_backoff_ms = 30000
+max_attempts = 5

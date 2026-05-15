@@ -1,0 +1,17 @@
+namespace spreadara.schemas;
+
+table MarketSnapshot {
+    timestamp_ns:uint64;
+    exchange_ts_ms:uint64;
+    best_bid:double;
+    best_ask:double;
+    mid_price:double;
+    spread_bps:double;
+    bid_depth_5:double;
+    ask_depth_5:double;
+    last_trade_price:double;
+    last_trade_qty:double;
+    volatility:double;
+}
+
+root_type MarketSnapshot;
