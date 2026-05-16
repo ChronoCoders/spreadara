@@ -1,0 +1,161 @@
+#include <cstdlib>
+#include <string>
+
+#include <gtest/gtest.h>
+
+#include "execution/order_manager.hpp"
+#include "execution/rest_client.hpp"
+#include "infra/config.hpp"
+#include "risk/circuit_breaker.hpp"
+#include "risk/position_tracker.hpp"
+#include "risk/risk_manager.hpp"
+
+using namespace spreadara;
+
+namespace {
+
+infra::Config make_cfg() {
+    infra::Config c{};
+    c.market_data.symbol = "BTCUSDT";
+    c.execution.rest_base_url = "https://fapi.binance.com";
+    c.execution.recv_window_ms = 5000;
+    c.execution.ack_timeout_ms = 2000;
+    c.execution.reconcile_interval_seconds = 300;
+    c.execution.position_divergence_tolerance = 0.001;
+    c.execution.flatten_threshold = 0.001;
+    c.execution.http_timeout_ms = 3000;
+    c.transport.fill_ring_capacity = 1024;
+    c.runtime.execution_cpu_core = -1;
+    c.strategy.min_tick = 0.1;
+    c.strategy.price_move_ticks_threshold = 2;
+    c.strategy.quote_qty = 0.01;
+    c.risk.max_position = 1000.0;
+    c.risk.max_order_size = 1000.0;
+    c.risk.price_sanity_pct = 50.0;
+    c.risk.rate_limit_threshold = 100000;
+    c.risk.max_daily_loss = 1e9;
+    c.risk.max_open_orders = 100;
+    c.risk.max_drawdown_pct = 99.0;
+    c.risk.max_unhedged_seconds = 99999;
+    c.risk.max_consecutive_rejections = 9999;
+    c.risk.circuit_breaker_poll_ms = 100;
+    return c;
+}
+
+}  // namespace
+
+TEST(Hmac, BinanceKnownVector) {
+    const std::string secret =
+        "NhqPtmdSJYdKjVHjA7PZj4Mge3R5YNiP1e3UZjInClVN65XAbvqqM6A7H5fATj0j";
+    const std::string qs =
+        "symbol=LTCBTC&side=BUY&type=LIMIT&timeInForce=GTC&quantity=1&price=0.1"
+        "&recvWindow=5000&timestamp=1499827319559";
+    const std::string expected =
+        "c8db56825ae71d6d79447849e617115f4a920fa2acdcab2b053c4b2838bd6b71";
+    EXPECT_EQ(execution::RestClient::hmac_sha256_hex(secret, qs), expected);
+}
+
+TEST(OrderState, ValidAndInvalidTransitions) {
+    using S = execution::OrderState;
+    EXPECT_TRUE(execution::is_valid_transition(S::PENDING, S::SUBMITTED));
+    EXPECT_TRUE(execution::is_valid_transition(S::SUBMITTED, S::ACKNOWLEDGED));
+    EXPECT_TRUE(execution::is_valid_transition(S::ACKNOWLEDGED, S::PARTIALLY_FILLED));
+    EXPECT_TRUE(execution::is_valid_transition(S::PARTIALLY_FILLED, S::FILLED));
+    EXPECT_TRUE(execution::is_valid_transition(S::ACKNOWLEDGED, S::FILLED));
+    EXPECT_TRUE(execution::is_valid_transition(S::SUBMITTED, S::REJECTED));
+
+    EXPECT_FALSE(execution::is_valid_transition(S::FILLED, S::PENDING));
+    EXPECT_FALSE(execution::is_valid_transition(S::CANCELED, S::SUBMITTED));
+    EXPECT_FALSE(execution::is_valid_transition(S::PENDING, S::FILLED));
+    EXPECT_FALSE(execution::is_valid_transition(S::PENDING, S::PENDING));
+}
+
+TEST(OrderManager, ForTestingStateTransition) {
+    auto cfg = make_cfg();
+    risk::PositionTracker pt;
+    risk::RiskManager rm(cfg, pt);
+    risk::RiskEventRing ring;
+    risk::CircuitBreaker cb(cfg, pt, rm, &ring);
+    execution::Credentials creds{"k", "s"};
+    execution::RestClient rest(cfg, creds, &cb);
+    execution::OrderManager om(cfg, rest, pt, rm, cb, nullptr);
+
+    // PENDING -> SUBMITTED -> ACKNOWLEDGED -> PARTIALLY_FILLED -> FILLED
+    EXPECT_TRUE(om.for_testing_state_transition(0, execution::OrderState::SUBMITTED));
+    EXPECT_TRUE(om.for_testing_state_transition(0, execution::OrderState::ACKNOWLEDGED));
+    EXPECT_TRUE(om.for_testing_state_transition(0, execution::OrderState::PARTIALLY_FILLED));
+    EXPECT_TRUE(om.for_testing_state_transition(0, execution::OrderState::FILLED));
+    EXPECT_FALSE(om.for_testing_state_transition(0, execution::OrderState::PENDING));
+}
+
+TEST(OrderManager, ReconcileDivergenceTriggersCb) {
+    auto cfg = make_cfg();
+    risk::PositionTracker pt;
+    risk::RiskManager rm(cfg, pt);
+    risk::RiskEventRing ring;
+    risk::CircuitBreaker cb(cfg, pt, rm, &ring);
+    execution::Credentials creds{"k", "s"};
+    execution::RestClient rest(cfg, creds, &cb);
+    execution::OrderManager om(cfg, rest, pt, rm, cb, nullptr);
+
+    // Drive local inventory to +0.10 via apply_fill (BUY 0.10 @ 100).
+    risk::FillInput f{};
+    f.order_id = "o1";
+    f.symbol = "BTCUSDT";
+    f.side = +1;
+    f.price = 100.0;
+    f.qty = 0.10;
+    pt.apply_fill(f);
+    ASSERT_NEAR(pt.current_inventory(), 0.10, 1e-9);
+
+    execution::PositionsSnapshot pos;
+    pos.ok = true;
+    execution::PositionEntry pe;
+    pe.symbol = "BTCUSDT";
+    pe.position_amt = 0.05;
+    pos.positions.push_back(pe);
+    execution::OpenOrdersSnapshot oo;
+    oo.ok = true;
+
+    EXPECT_FALSE(cb.halted());
+    om.for_testing_reconcile(pos, oo);
+    EXPECT_TRUE(cb.halted());
+}
+
+TEST(RestClient, Geoblock451HaltsCb) {
+    auto cfg = make_cfg();
+    risk::PositionTracker pt;
+    risk::RiskManager rm(cfg, pt);
+    risk::RiskEventRing ring;
+    risk::CircuitBreaker cb(cfg, pt, rm, &ring);
+    execution::Credentials creds{"k", "s"};
+    execution::RestClient rest(cfg, creds, &cb);
+
+    EXPECT_FALSE(cb.halted());
+    bool ok = rest.handle_response_for_test(451, "{}", "/fapi/v1/order");
+    EXPECT_FALSE(ok);
+    EXPECT_TRUE(cb.halted());
+}
+
+TEST(Env, CredentialsPresent) {
+    // Save existing values to restore.
+    const char* old_k = std::getenv("SPREADARA_API_KEY");
+    const char* old_s = std::getenv("SPREADARA_API_SECRET");
+    std::string sk = old_k ? old_k : "";
+    std::string ss = old_s ? old_s : "";
+
+    ::unsetenv("SPREADARA_API_KEY");
+    ::unsetenv("SPREADARA_API_SECRET");
+    EXPECT_FALSE(execution::credentials_present());
+
+    ::setenv("SPREADARA_API_KEY", "abc", 1);
+    EXPECT_FALSE(execution::credentials_present());
+
+    ::setenv("SPREADARA_API_SECRET", "def", 1);
+    EXPECT_TRUE(execution::credentials_present());
+
+    ::unsetenv("SPREADARA_API_KEY");
+    ::unsetenv("SPREADARA_API_SECRET");
+    if (!sk.empty()) ::setenv("SPREADARA_API_KEY", sk.c_str(), 1);
+    if (!ss.empty()) ::setenv("SPREADARA_API_SECRET", ss.c_str(), 1);
+}

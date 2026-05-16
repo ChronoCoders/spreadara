@@ -83,6 +83,9 @@ set(LIB_SOURCES
     src/risk/position_tracker.cpp
     src/risk/risk_manager.cpp
     src/risk/circuit_breaker.cpp
+    src/execution/rest_client.cpp
+    src/execution/order_manager.cpp
+    src/execution/fix_client.cpp
 )
 
 add_library(spreadara_lib STATIC ${LIB_SOURCES})
@@ -134,6 +137,10 @@ if(BUILD_TESTS)
     add_executable(test_risk tests/test_risk.cpp)
     target_link_libraries(test_risk PRIVATE spreadara_lib GTest::gtest GTest::gtest_main)
     add_test(NAME test_risk COMMAND test_risk)
+
+    add_executable(test_execution tests/test_execution.cpp)
+    target_link_libraries(test_execution PRIVATE spreadara_lib GTest::gtest GTest::gtest_main)
+    add_test(NAME test_execution COMMAND test_execution)
 endif()
 
 if(BUILD_BENCHMARKS)

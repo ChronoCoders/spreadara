@@ -19,6 +19,7 @@ struct Config {
         std::size_t snapshot_ring_capacity;
         std::size_t quote_ring_capacity;
         std::size_t risk_event_ring_capacity;
+        std::size_t fill_ring_capacity;
     } transport;
 
     struct {
@@ -26,7 +27,18 @@ struct Config {
         int processor_cpu_core;
         int strategy_cpu_core;
         int risk_cpu_core;
+        int execution_cpu_core;
     } runtime;
+
+    struct {
+        std::string rest_base_url;
+        int recv_window_ms;
+        int ack_timeout_ms;
+        int reconcile_interval_seconds;
+        double position_divergence_tolerance;
+        double flatten_threshold;
+        int http_timeout_ms;
+    } execution;
 
     struct {
         std::string level;
@@ -44,6 +56,7 @@ struct Config {
         double k;
         double horizon;
         double min_tick;
+        double qty_step;
         double volatility_floor;
         double baseline_volatility;
         double vol_widen_multiplier;

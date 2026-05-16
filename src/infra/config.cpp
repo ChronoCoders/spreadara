@@ -22,11 +22,24 @@ Config load_config(const std::string& path) {
         static_cast<std::size_t>(tbl["transport"]["quote_ring_capacity"].value_or<int64_t>(16384));
     c.transport.risk_event_ring_capacity =
         static_cast<std::size_t>(tbl["transport"]["risk_event_ring_capacity"].value_or<int64_t>(1024));
+    c.transport.fill_ring_capacity =
+        static_cast<std::size_t>(tbl["transport"]["fill_ring_capacity"].value_or<int64_t>(1024));
 
     c.runtime.ws_cpu_core = tbl["runtime"]["ws_cpu_core"].value_or(-1);
     c.runtime.processor_cpu_core = tbl["runtime"]["processor_cpu_core"].value_or(-1);
     c.runtime.strategy_cpu_core = tbl["runtime"]["strategy_cpu_core"].value_or(-1);
     c.runtime.risk_cpu_core = tbl["runtime"]["risk_cpu_core"].value_or(-1);
+    c.runtime.execution_cpu_core = tbl["runtime"]["execution_cpu_core"].value_or(-1);
+
+    c.execution.rest_base_url = tbl["execution"]["rest_base_url"].value_or("");
+    c.execution.recv_window_ms = tbl["execution"]["recv_window_ms"].value_or(5000);
+    c.execution.ack_timeout_ms = tbl["execution"]["ack_timeout_ms"].value_or(2000);
+    c.execution.reconcile_interval_seconds =
+        tbl["execution"]["reconcile_interval_seconds"].value_or(300);
+    c.execution.position_divergence_tolerance =
+        tbl["execution"]["position_divergence_tolerance"].value_or(0.001);
+    c.execution.flatten_threshold = tbl["execution"]["flatten_threshold"].value_or(0.001);
+    c.execution.http_timeout_ms = tbl["execution"]["http_timeout_ms"].value_or(3000);
 
     c.logging.level = tbl["logging"]["level"].value_or("info");
     c.logging.file = tbl["logging"]["file"].value_or("spreadara.log");
@@ -39,6 +52,7 @@ Config load_config(const std::string& path) {
     c.strategy.k = tbl["strategy"]["k"].value_or(1.5);
     c.strategy.horizon = tbl["strategy"]["horizon"].value_or(1.0);
     c.strategy.min_tick = tbl["strategy"]["min_tick"].value_or(0.1);
+    c.strategy.qty_step = tbl["strategy"]["qty_step"].value_or(0.001);
     c.strategy.volatility_floor = tbl["strategy"]["volatility_floor"].value_or(0.0001);
     c.strategy.baseline_volatility = tbl["strategy"]["baseline_volatility"].value_or(0.0002);
     c.strategy.vol_widen_multiplier = tbl["strategy"]["vol_widen_multiplier"].value_or(1.5);

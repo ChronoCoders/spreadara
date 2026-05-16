@@ -23,6 +23,8 @@
 #include "strategy/market_maker.hpp"
 #include "strategy/signal_aggregator.hpp"
 #include "strategy/spread_model.hpp"
+#include "execution/rest_client.hpp"
+#include "execution/order_manager.hpp"
 
 namespace {
 std::atomic<bool> g_shutdown{false};
@@ -44,6 +46,17 @@ int main(int argc, char** argv) {
     spreadara::infra::calibrate_tsc();
     spdlog::info("startup symbol={} tsc_ghz={:.3f}", cfg.market_data.symbol, spreadara::infra::tsc_ghz());
 
+    // WHY: credentials MUST come from env. Read once here so they never enter
+    // any spdlog format call, error message, or config-derived code path.
+    if (!spreadara::execution::credentials_present()) {
+        spdlog::critical("missing_credentials need_env=SPREADARA_API_KEY,SPREADARA_API_SECRET");
+        return 2;
+    }
+    spreadara::execution::Credentials creds{
+        std::getenv("SPREADARA_API_KEY"),
+        std::getenv("SPREADARA_API_SECRET"),
+    };
+
     curl_global_init(CURL_GLOBAL_DEFAULT);
 
     auto ring = std::make_unique<spreadara::market_data::EventRing>();
@@ -64,6 +77,12 @@ int main(int argc, char** argv) {
     spreadara::risk::CircuitBreaker circuit_breaker(cfg, pos_tracker, risk_mgr, risk_event_ring.get());
     mm.set_risk(&risk_mgr, &circuit_breaker);
     circuit_breaker.start();
+
+    spreadara::execution::RestClient rest_client(cfg, creds, &circuit_breaker);
+    spreadara::execution::OrderManager order_manager(cfg, rest_client, pos_tracker,
+                                                     risk_mgr, circuit_breaker,
+                                                     quote_ring.get());
+    order_manager.start();
 
     std::atomic<bool> strat_running{true};
     std::thread strat_thread([&] {
@@ -115,6 +134,7 @@ int main(int argc, char** argv) {
     processor.stop();
     strat_running.store(false, std::memory_order_release);
     if (strat_thread.joinable()) strat_thread.join();
+    order_manager.stop();
     circuit_breaker.stop();
     curl_global_cleanup();
     spdlog::shutdown();

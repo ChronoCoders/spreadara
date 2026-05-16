@@ -10,12 +10,23 @@ ring_buffer_capacity = 65536
 snapshot_ring_capacity = 16384
 quote_ring_capacity = 16384
 risk_event_ring_capacity = 1024
+fill_ring_capacity = 1024
 
 [runtime]
 ws_cpu_core = 2
 processor_cpu_core = 3
 strategy_cpu_core = 4
 risk_cpu_core = -1
+execution_cpu_core = -1
+
+[execution]
+rest_base_url = "https://fapi.binance.com"
+recv_window_ms = 5000
+ack_timeout_ms = 2000
+reconcile_interval_seconds = 300
+position_divergence_tolerance = 0.001
+flatten_threshold = 0.001
+http_timeout_ms = 3000
 
 [logging]
 level = "info"
@@ -31,6 +42,7 @@ gamma = 0.1
 k = 1.5
 horizon = 1.0
 min_tick = 0.1
+qty_step = 0.001
 volatility_floor = 0.0001
 baseline_volatility = 0.0002
 vol_widen_multiplier = 1.5
