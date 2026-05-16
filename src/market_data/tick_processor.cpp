@@ -72,7 +72,16 @@ void TickProcessor::process_event(const MarketEvent& ev) {
             break;
         }
         case EventType::Depth: {
-            if (!book_.has_data() || book_.needs_resync()) {
+            if (ev.depth.is_snapshot) {
+                // WHY: snapshot channels (OKX books5, etc.) ship a complete
+                // book in every message. Apply directly. No gap detection,
+                // no REST resync — pu/last_u comparisons are meaningless
+                // when there is no delta semantics.
+                std::array<PriceLevel, OrderBook::kMaxLevels> b = ev.depth.bids;
+                std::array<PriceLevel, OrderBook::kMaxLevels> a = ev.depth.asks;
+                book_.apply_snapshot(b, ev.depth.bid_count, a, ev.depth.ask_count,
+                                     ev.depth.final_update_id);
+            } else if (!book_.has_data() || book_.needs_resync()) {
                 DepthSnapshot snap;
                 if (fetch_depth_snapshot(cfg_, snap)) {
                     book_.apply_snapshot(snap.bids, snap.bid_count,

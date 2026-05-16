@@ -221,6 +221,19 @@ bool OrderManager::cancel_slot(int slot_idx) {
         sync_open_orders();
         return true;
     }
+    // WHY: 51400 (OKX) and -2011 (Binance) mean "order does not exist on the
+    // exchange" — already filled, already canceled, or never existed. This is
+    // a fill race, not a failure: the order is GONE from the exchange's
+    // perspective, so our slot must reflect that or we get stuck retrying
+    // forever. The corresponding fill (if any) is caught by reconcile.
+    if (c.binance_code == 51400 || c.binance_code == -2011) {
+        spdlog::info("cancel_idempotent cid={} exchange_code={} reason=already_gone",
+                     s.client_order_id, c.binance_code);
+        transition(slot_idx, OrderState::CANCELED);
+        s.active = false;
+        sync_open_orders();
+        return true;
+    }
     spdlog::warn("cancel_failed cid={} http={} binance_code={}",
                  s.client_order_id, c.http_code, c.binance_code);
     return false;

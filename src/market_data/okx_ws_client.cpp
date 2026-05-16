@@ -280,6 +280,12 @@ private:
                 ev.depth.first_update_id = static_cast<uint64_t>(seq);
                 ev.depth.final_update_id = static_cast<uint64_t>(seq);
                 ev.depth.prev_final_update_id = static_cast<uint64_t>(pseq);
+                // WHY: books5 is a snapshot channel. Every message is a full
+                // top-5 book, not a delta. Tick processor must NOT run gap
+                // detection or trigger REST resync — both fire spurious
+                // false positives at 10 Hz since prevSeqId isn't part of
+                // books5 in the first place.
+                ev.depth.is_snapshot = true;
 
                 std::size_t bi = 0;
                 auto bids_a = entry["bids"];

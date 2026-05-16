@@ -29,7 +29,12 @@ struct DepthEvent {
     uint64_t exchange_ts_ms;
     uint64_t first_update_id;  // U
     uint64_t final_update_id;  // u
-    uint64_t prev_final_update_id;  // pu
+    uint64_t prev_final_update_id;  // pu — only meaningful when !is_snapshot
+    // WHY: full-snapshot channels (e.g. OKX books5) ship a complete top-N
+    // book in every message, not a delta. Gap detection only applies to
+    // incremental streams; for snapshot channels we apply directly and
+    // skip the REST resync path.
+    bool is_snapshot;
     uint8_t bid_count;
     uint8_t ask_count;
     std::array<PriceLevel, 20> bids;
