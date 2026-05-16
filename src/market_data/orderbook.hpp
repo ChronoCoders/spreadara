@@ -8,6 +8,15 @@
 
 namespace spreadara::market_data {
 
+// Concurrency contract: single writer (TickProcessor's consumer thread
+// calling apply_snapshot / apply_partial_update), multiple readers
+// (tick_processor itself, plus the 1 Hz snap_thread in main.cpp that pulls
+// best_bid/best_ask/spread/depth into the dashboard telemetry row). Reads
+// of distinct fields are NOT atomic as a group — a reader may observe a
+// transient mix of old/new bids_[0].price and bid_count_ during an
+// apply_partial_update. Acceptable here: snap_thread runs at 1 Hz for
+// dashboard display, not P&L truth. Strict consistency would require a
+// seqlock; intentionally not done given the µs-scale write windows.
 class OrderBook {
 public:
     static constexpr std::size_t kMaxLevels = 20;

@@ -95,6 +95,13 @@ enabled = false
 ws_base_url = "wss://wspap.okx.com:8443/ws/v5/public?brokerId=9999"
 rest_base_url = "https://www.okx.com"
 
+# Phase 8: dashboard progress-bar denominators. The Go backend reads these via
+# env vars (SPREADARA_MAX_OPEN_ORDERS, SPREADARA_MAX_INVENTORY_DISPLAY); the
+# config-file entries here are operator documentation only.
+[dashboard]
+max_open_orders = 10
+max_inventory_display = 0.1
+
 [risk]
 max_position = 0.1
 max_order_size = 0.05

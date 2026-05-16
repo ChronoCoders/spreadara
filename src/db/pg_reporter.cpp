@@ -58,7 +58,24 @@ constexpr const char* kSchemaSql =
     "  unrealized DOUBLE PRECISION NOT NULL,"
     "  fees DOUBLE PRECISION NOT NULL,"
     "  total DOUBLE PRECISION NOT NULL"
-    ");";
+    ");"
+    // Phase 8: idempotent telemetry columns. DOUBLE PRECISION (not NUMERIC) to
+    // match the rest of the schema and avoid pqxx <-> numeric conversion friction.
+    // T_param (not T) avoids reserved-feeling identifier conflicts in some clients.
+    "ALTER TABLE position_snapshots ADD COLUMN IF NOT EXISTS best_bid    DOUBLE PRECISION;"
+    "ALTER TABLE position_snapshots ADD COLUMN IF NOT EXISTS best_ask    DOUBLE PRECISION;"
+    "ALTER TABLE position_snapshots ADD COLUMN IF NOT EXISTS spread_bps  DOUBLE PRECISION;"
+    "ALTER TABLE position_snapshots ADD COLUMN IF NOT EXISTS bid_qty     DOUBLE PRECISION;"
+    "ALTER TABLE position_snapshots ADD COLUMN IF NOT EXISTS ask_qty     DOUBLE PRECISION;"
+    "ALTER TABLE position_snapshots ADD COLUMN IF NOT EXISTS volatility  DOUBLE PRECISION;"
+    "ALTER TABLE position_snapshots ADD COLUMN IF NOT EXISTS gamma       DOUBLE PRECISION;"
+    "ALTER TABLE position_snapshots ADD COLUMN IF NOT EXISTS k           DOUBLE PRECISION;"
+    "ALTER TABLE position_snapshots ADD COLUMN IF NOT EXISTS T_param     DOUBLE PRECISION;"
+    "ALTER TABLE position_snapshots ADD COLUMN IF NOT EXISTS lat_p50_us  DOUBLE PRECISION;"
+    "ALTER TABLE position_snapshots ADD COLUMN IF NOT EXISTS lat_p95_us  DOUBLE PRECISION;"
+    "ALTER TABLE position_snapshots ADD COLUMN IF NOT EXISTS lat_p99_us  DOUBLE PRECISION;"
+    "ALTER TABLE position_snapshots ADD COLUMN IF NOT EXISTS open_orders INTEGER;"
+    "ALTER TABLE trades             ADD COLUMN IF NOT EXISTS is_maker    BOOLEAN DEFAULT TRUE;";
 
 std::string date_int_to_iso(int32_t d) {
     // d is yyyymmdd
@@ -239,21 +256,28 @@ bool PgReporter::exec_one_event(PgConnImpl& impl, const DbEvent& ev) {
         case DbEventKind::Trade: {
             const auto& t = ev.trade;
             tx.exec_params(
-                "INSERT INTO trades(ts_ns, order_id, side, price, qty, fee, fee_asset) "
-                "VALUES($1, $2, $3, $4, $5, $6, $7)",
+                "INSERT INTO trades(ts_ns, order_id, side, price, qty, fee, fee_asset, is_maker) "
+                "VALUES($1, $2, $3, $4, $5, $6, $7, $8)",
                 static_cast<int64_t>(t.ts_ns), std::string(t.order_id),
                 static_cast<int>(t.side), t.price, t.qty, t.fee,
-                std::string(t.fee_asset));
+                std::string(t.fee_asset), t.is_maker);
             break;
         }
         case DbEventKind::PositionSnapshot: {
             const auto& s = ev.snap;
             tx.exec_params(
                 "INSERT INTO position_snapshots(ts_ns, inventory, avg_entry, realized_pnl, "
-                "unrealized_pnl, total_fees, mid_price) "
-                "VALUES($1, $2, $3, $4, $5, $6, $7)",
+                "unrealized_pnl, total_fees, mid_price, best_bid, best_ask, spread_bps, "
+                "bid_qty, ask_qty, volatility, gamma, k, T_param, lat_p50_us, lat_p95_us, "
+                "lat_p99_us, open_orders) "
+                "VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, "
+                "$16, $17, $18, $19, $20)",
                 static_cast<int64_t>(s.ts_ns), s.inventory, s.avg_entry, s.realized,
-                s.unrealized, s.fees, s.mid);
+                s.unrealized, s.fees, s.mid,
+                s.best_bid, s.best_ask, s.spread_bps, s.bid_qty, s.ask_qty,
+                s.volatility, s.gamma, s.k, s.T,
+                s.lat_p50_us, s.lat_p95_us, s.lat_p99_us,
+                static_cast<int>(s.open_orders));
             break;
         }
         case DbEventKind::SystemEvent: {
@@ -325,21 +349,28 @@ bool PgReporter::flush_batch(std::vector<DbEvent>& batch) {
                     case DbEventKind::Trade: {
                         const auto& t = ev.trade;
                         tx.exec_params(
-                            "INSERT INTO trades(ts_ns, order_id, side, price, qty, fee, fee_asset) "
-                            "VALUES($1, $2, $3, $4, $5, $6, $7)",
+                            "INSERT INTO trades(ts_ns, order_id, side, price, qty, fee, fee_asset, is_maker) "
+                            "VALUES($1, $2, $3, $4, $5, $6, $7, $8)",
                             static_cast<int64_t>(t.ts_ns), std::string(t.order_id),
                             static_cast<int>(t.side), t.price, t.qty, t.fee,
-                            std::string(t.fee_asset));
+                            std::string(t.fee_asset), t.is_maker);
                         break;
                     }
                     case DbEventKind::PositionSnapshot: {
                         const auto& s = ev.snap;
                         tx.exec_params(
                             "INSERT INTO position_snapshots(ts_ns, inventory, avg_entry, realized_pnl, "
-                            "unrealized_pnl, total_fees, mid_price) "
-                            "VALUES($1, $2, $3, $4, $5, $6, $7)",
+                            "unrealized_pnl, total_fees, mid_price, best_bid, best_ask, spread_bps, "
+                            "bid_qty, ask_qty, volatility, gamma, k, T_param, lat_p50_us, lat_p95_us, "
+                            "lat_p99_us, open_orders) "
+                            "VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, "
+                            "$16, $17, $18, $19, $20)",
                             static_cast<int64_t>(s.ts_ns), s.inventory, s.avg_entry, s.realized,
-                            s.unrealized, s.fees, s.mid);
+                            s.unrealized, s.fees, s.mid,
+                            s.best_bid, s.best_ask, s.spread_bps, s.bid_qty, s.ask_qty,
+                            s.volatility, s.gamma, s.k, s.T,
+                            s.lat_p50_us, s.lat_p95_us, s.lat_p99_us,
+                            static_cast<int>(s.open_orders));
                         break;
                     }
                     case DbEventKind::SystemEvent: {

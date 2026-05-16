@@ -1,5 +1,6 @@
 #include "execution/order_manager.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -198,17 +199,76 @@ bool OrderManager::place_new(int slot_idx, double price, double qty) {
     if (s.state != OrderState::NEW) s.state = OrderState::NEW;
     transition(slot_idx, OrderState::PENDING);
     transition(slot_idx, OrderState::SUBMITTED);
+    // Phase 8: RDTSC at SUBMITTED transition; stored on the slot so an
+    // async-ACK path (Phase 9) can read it back when the ACK arrives later.
+    s.submit_cycles = infra::rdtsc_cycles();
     const char* side_str = (s.side > 0) ? "BUY" : "SELL";
     OrderAck a = rest_.place_order(side_str, qty, price, true, s.client_order_id);
     if (a.ok) {
         s.exchange_order_id = a.exchange_order_id;
         transition(slot_idx, OrderState::ACKNOWLEDGED);
+        const uint64_t now_cycles = infra::rdtsc_cycles();
+        if (now_cycles > s.submit_cycles) {
+            record_latency_cycles(now_cycles - s.submit_cycles);
+        }
         sync_open_orders();
         return true;
     }
     transition(slot_idx, OrderState::REJECTED);
     sync_open_orders();
     return false;
+}
+
+void OrderManager::record_latency_cycles(uint64_t cycles) {
+    std::lock_guard<std::mutex> lk(latency_mu_);
+    latency_cycles_[latency_idx_] = cycles;
+    latency_idx_ = (latency_idx_ + 1) % kLatencyWindow;
+    if (latency_count_ < kLatencyWindow) ++latency_count_;
+}
+
+void OrderManager::latency_percentiles(double& p50_us, double& p95_us,
+                                       double& p99_us) const {
+    std::vector<uint64_t> snap;
+    {
+        std::lock_guard<std::mutex> lk(latency_mu_);
+        if (latency_count_ == 0) {
+            p50_us = p95_us = p99_us = 0.0;
+            return;
+        }
+        snap.assign(latency_cycles_.begin(),
+                    latency_cycles_.begin() + static_cast<std::ptrdiff_t>(latency_count_));
+    }
+    std::sort(snap.begin(), snap.end());
+    const double ghz = infra::tsc_ghz();
+    auto pick = [&](double q) -> double {
+        if (snap.empty()) return 0.0;
+        std::size_t idx = static_cast<std::size_t>(q * static_cast<double>(snap.size() - 1));
+        if (idx >= snap.size()) idx = snap.size() - 1;
+        const double cycles = static_cast<double>(snap[idx]);
+        // WHY: cycles -> us = cycles / (ghz * 1e3). Guard against ghz==0
+        // (calibrate_tsc not invoked in some unit-test paths).
+        if (ghz <= 0.0) return 0.0;
+        return cycles / (ghz * 1000.0);
+    };
+    p50_us = pick(0.50);
+    p95_us = pick(0.95);
+    p99_us = pick(0.99);
+}
+
+double OrderManager::latency_p50_us() const {
+    double a = 0.0, b = 0.0, c = 0.0;
+    latency_percentiles(a, b, c);
+    return a;
+}
+double OrderManager::latency_p95_us() const {
+    double a = 0.0, b = 0.0, c = 0.0;
+    latency_percentiles(a, b, c);
+    return b;
+}
+double OrderManager::latency_p99_us() const {
+    double a = 0.0, b = 0.0, c = 0.0;
+    latency_percentiles(a, b, c);
+    return c;
 }
 
 bool OrderManager::cancel_slot(int slot_idx) {
@@ -283,6 +343,9 @@ bool OrderManager::inject_fill(const risk::FillInput& f) {
         ev.trade.fee = f.fee;
         std::snprintf(ev.trade.fee_asset, sizeof(ev.trade.fee_asset), "%s", f.fee_asset.c_str());
         ev.trade.ts_ns = f.timestamp_ns;
+        // Phase 8: postOnly placements via OKX/Binance guarantee maker-only.
+        // Non-maker fills (e.g. market flatten on halt) must set false explicitly.
+        ev.trade.is_maker = true;
         if (!reporter_->push(ev)) {
             spdlog::warn("db_ring_full kind=trade order_id={}", f.order_id);
         }

@@ -364,6 +364,26 @@ int main(int argc, char** argv) {
             ev.snap.unrealized = unreal;
             ev.snap.fees = fees;
             ev.snap.mid = pos_tracker.last_mid();
+            // Phase 8: pull live order-book + strategy + latency telemetry so
+            // the dashboard's per-second snapshot row carries actionable data.
+            // OrderBook getters return 0.0 / 0.0 before first depth event, which
+            // is fine — the dashboard treats 0 mid/spread as "not yet ready".
+            const auto& ob = processor.book();
+            ev.snap.best_bid = ob.best_bid();
+            ev.snap.best_ask = ob.best_ask();
+            ev.snap.spread_bps = ob.spread_bps();
+            ev.snap.bid_qty = ob.depth_sum(true, 1);
+            ev.snap.ask_qty = ob.depth_sum(false, 1);
+            ev.snap.volatility = processor.current_volatility();
+            ev.snap.gamma = cfg.strategy.gamma;
+            ev.snap.k = cfg.strategy.k;
+            ev.snap.T = cfg.strategy.horizon;
+            double p50 = 0.0, p95 = 0.0, p99 = 0.0;
+            order_manager.latency_percentiles(p50, p95, p99);
+            ev.snap.lat_p50_us = p50;
+            ev.snap.lat_p95_us = p95;
+            ev.snap.lat_p99_us = p99;
+            ev.snap.open_orders = risk_mgr.open_order_count();
             (void)reporter.push(ev);
 
             // WHY: push every second; the reporter coalesces same-date

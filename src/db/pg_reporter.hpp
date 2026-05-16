@@ -36,6 +36,7 @@ struct DbTrade {
     double fee;
     char fee_asset[8];
     uint64_t ts_ns;
+    bool is_maker;   // Phase 8: postOnly fills are always maker
 };
 
 struct DbPositionSnapshot {
@@ -46,6 +47,20 @@ struct DbPositionSnapshot {
     double unrealized;
     double fees;
     double mid;
+    // Phase 8 additions:
+    double best_bid;
+    double best_ask;
+    double spread_bps;
+    double bid_qty;
+    double ask_qty;
+    double volatility;
+    double gamma;
+    double k;
+    double T;
+    double lat_p50_us;
+    double lat_p95_us;
+    double lat_p99_us;
+    int32_t open_orders;
 };
 
 struct DbSystemEvent {

@@ -59,6 +59,11 @@ struct OrderSlot {
     double executed_qty{0.0};
     OrderState state{OrderState::NEW};
     uint64_t submit_ts_ns{0};
+    // WHY: RDTSC capture at SUBMITTED so a future async-ACK path (Phase 9
+    // FIX, user-data stream) can still compute round-trip latency across
+    // method boundaries. Today's synchronous place_order/ACK pair uses it
+    // within place_new only.
+    uint64_t submit_cycles{0};
 };
 
 // FillEventRing carries FlatBuffer-encoded FillEvent bytes from the
@@ -104,6 +109,13 @@ public:
 
     // WHY: optional Phase-5 hook. nullptr by default keeps existing tests intact.
     void set_reporter(db::PgReporter* r) { reporter_ = r; }
+
+    // Phase 8: rolling-window ACK-latency percentiles in microseconds. Returns
+    // 0.0 if the window is empty. Cheap enough to call at 1 Hz from snap_thread.
+    void latency_percentiles(double& p50_us, double& p95_us, double& p99_us) const;
+    double latency_p50_us() const;
+    double latency_p95_us() const;
+    double latency_p99_us() const;
 
 private:
     friend class OrderManagerTestPeer;
@@ -163,6 +175,17 @@ private:
 
     std::atomic<uint64_t> cid_counter_{0};
     uint64_t start_ms_{0};
+
+    // Phase 8: ACK-latency telemetry (RDTSC cycles, rolling window). Mutex
+    // contention is negligible — record fires once per ACK (~10/s), query
+    // fires at 1 Hz from snap_thread.
+    static constexpr std::size_t kLatencyWindow = 1000;
+    std::array<uint64_t, kLatencyWindow> latency_cycles_{};
+    std::size_t latency_idx_{0};
+    std::size_t latency_count_{0};
+    mutable std::mutex latency_mu_;
+
+    void record_latency_cycles(uint64_t cycles);
 
     // WHY: serializes slot bookkeeping AND rest_ calls. Quote, halt, and
     // reconcile threads all touch slots_ and rest_; libcurl handles are not

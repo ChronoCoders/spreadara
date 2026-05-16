@@ -35,11 +35,7 @@ type Snapshot struct {
 	Fees       float64 `json:"total_fees"`
 	Mid        float64 `json:"mid_price"`
 	CumTotal   float64 `json:"cum_total"`
-	// Phase 7: dashboard Operations view fields. BidPrice/AskPrice/SpreadBps
-	// and OpenOrders are placeholders — the C++ trading binary does not yet
-	// write them; left at zero until DbPositionSnapshot is extended.
-	// TODO(phase8): extend C++ DbPositionSnapshot to write bid/ask/spread and
-	// open-order count so these surface real values.
+	// Phase 8: real values now sourced from extended position_snapshots row.
 	BidPrice             float64 `json:"bid_price"`
 	AskPrice             float64 `json:"ask_price"`
 	SpreadBps            float64 `json:"spread_bps"`
@@ -48,6 +44,22 @@ type Snapshot struct {
 	MaxOpenOrders        int     `json:"max_open_orders"`
 	CurrentDrawdownPct   float64 `json:"current_drawdown_pct"`
 	MaxDrawdownPct       float64 `json:"max_drawdown_pct"`
+	// Phase 8 telemetry fields:
+	BidQty              float64 `json:"bid_qty"`
+	AskQty              float64 `json:"ask_qty"`
+	Volatility          float64 `json:"volatility"`
+	Gamma               float64 `json:"gamma"`
+	K                   float64 `json:"k"`
+	T                   float64 `json:"t"`
+	LatP50Us            float64 `json:"lat_p50_us"`
+	LatP95Us            float64 `json:"lat_p95_us"`
+	LatP99Us            float64 `json:"lat_p99_us"`
+	MaxInventoryDisplay float64 `json:"max_inventory_display"`
+	// Computed in the handler from the trades table, not stored in the snapshot:
+	FillCount10s int     `json:"fill_count_10s"`
+	FillCount60s int     `json:"fill_count_60s"`
+	MakerRatio   float64 `json:"maker_ratio"`
+	FillsPer10s  float64 `json:"fills_per_10s"`
 }
 
 type Trade struct {
@@ -93,19 +105,90 @@ type haltedReader interface {
 	wsStreamsUp() (bool, error)
 }
 
+// fillStatsReader is an optional capability for readers that can compute
+// fill-rate / maker-ratio stats from the trades table. sqlReader implements
+// it; the test stubReader does not, so handlers fall back to zeros.
+type fillStatsReader interface {
+	fillStats() (int, int, float64, float64, error)
+}
+
 type sqlReader struct{ db *sql.DB }
 
 func (r *sqlReader) latestSnapshot() (Snapshot, error) {
 	var s Snapshot
+	// Phase 8: NullFloat64 / NullInt64 for the columns added via ALTER. Rows
+	// inserted before Phase 8 carry NULL for these and must scan cleanly.
+	var bb, ba, sp, bq, aq, vol, gm, kk, tp, l50, l95, l99 sql.NullFloat64
+	var oo sql.NullInt64
 	err := r.db.QueryRow(
-		`SELECT ts_ns, inventory, avg_entry, realized_pnl, unrealized_pnl, total_fees, mid_price
+		`SELECT ts_ns, inventory, avg_entry, realized_pnl, unrealized_pnl, total_fees, mid_price,
+		        best_bid, best_ask, spread_bps, bid_qty, ask_qty, volatility, gamma, k, T_param,
+		        lat_p50_us, lat_p95_us, lat_p99_us, open_orders
 		 FROM position_snapshots ORDER BY ts_ns DESC LIMIT 1`,
-	).Scan(&s.TsNs, &s.Inventory, &s.AvgEntry, &s.Realized, &s.Unrealized, &s.Fees, &s.Mid)
+	).Scan(&s.TsNs, &s.Inventory, &s.AvgEntry, &s.Realized, &s.Unrealized, &s.Fees, &s.Mid,
+		&bb, &ba, &sp, &bq, &aq, &vol, &gm, &kk, &tp, &l50, &l95, &l99, &oo)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return s, err
 	}
+	s.BidPrice = bb.Float64
+	s.AskPrice = ba.Float64
+	s.SpreadBps = sp.Float64
+	s.BidQty = bq.Float64
+	s.AskQty = aq.Float64
+	s.Volatility = vol.Float64
+	s.Gamma = gm.Float64
+	s.K = kk.Float64
+	s.T = tp.Float64
+	s.LatP50Us = l50.Float64
+	s.LatP95Us = l95.Float64
+	s.LatP99Us = l99.Float64
+	s.OpenOrders = int(oo.Int64)
 	_ = r.db.QueryRow(`SELECT COALESCE(SUM(total),0) FROM daily_pnl`).Scan(&s.CumTotal)
 	return s, nil
+}
+
+// lastSnapshotTs returns the most recent position_snapshots.ts_ns or 0 if
+// the table is empty. WHY: /api/v5/status only needs the timestamp to
+// compute ws_connected + last_snapshot_age_ms; calling latestSnapshot()
+// would pull 20 columns and run the cum_total subquery just to discard
+// everything except ts_ns.
+func (r *sqlReader) lastSnapshotTs() (int64, error) {
+	var ts int64
+	err := r.db.QueryRow(
+		`SELECT ts_ns FROM position_snapshots ORDER BY ts_ns DESC LIMIT 1`,
+	).Scan(&ts)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return 0, err
+	}
+	return ts, nil
+}
+
+// fillStats returns (count10s, count60s, makerRatio, fillsPer10s) computed
+// from the trades table in a single query. is_maker may be NULL on legacy
+// rows — COALESCE to TRUE matches the column default.
+func (r *sqlReader) fillStats() (int, int, float64, float64, error) {
+	nowNs := time.Now().UnixNano()
+	cut10 := nowNs - int64(10)*int64(time.Second)
+	cut60 := nowNs - int64(60)*int64(time.Second)
+	var f10, f60, makers, total int
+	err := r.db.QueryRow(
+		`SELECT
+		   COUNT(*) FILTER (WHERE ts_ns > $1) AS f10,
+		   COUNT(*) FILTER (WHERE ts_ns > $2) AS f60,
+		   COUNT(*) FILTER (WHERE COALESCE(is_maker, TRUE)) AS makers,
+		   COUNT(*) AS total
+		 FROM trades
+		 WHERE ts_ns > $2`,
+		cut10, cut60,
+	).Scan(&f10, &f60, &makers, &total)
+	if err != nil {
+		return 0, 0, 0, 0, err
+	}
+	var ratio float64
+	if total > 0 {
+		ratio = float64(makers) / float64(total)
+	}
+	return f10, f60, ratio, float64(f10), nil
 }
 
 func (r *sqlReader) recentTrades(limit int) ([]Trade, error) {
@@ -239,6 +322,10 @@ type server struct {
 	maxDrawdownPct float64
 	exchangeName   string
 	startTime      time.Time
+	// Phase 8: progress-bar denominator for the inventory gauge. Env override
+	// SPREADARA_MAX_INVENTORY_DISPLAY; config-file value is operator-doc only
+	// (the Go backend does not parse TOML).
+	maxInventoryDisplay float64
 }
 
 func newServer(r dbReader, wsInterval time.Duration, corsOrigin string) *server {
@@ -258,12 +345,19 @@ func newServer(r dbReader, wsInterval time.Duration, corsOrigin string) *server 
 	if exch == "" {
 		exch = "binance"
 	}
+	maxInvDisp := 0.1
+	if v := os.Getenv("SPREADARA_MAX_INVENTORY_DISPLAY"); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil && f > 0 {
+			maxInvDisp = f
+		}
+	}
 	return &server{
 		r: r, wsInterval: wsInterval, corsOrigin: corsOrigin,
-		maxOpenOrders:  maxOO,
-		maxDrawdownPct: maxDd,
-		exchangeName:   exch,
-		startTime:      time.Now(),
+		maxOpenOrders:       maxOO,
+		maxDrawdownPct:      maxDd,
+		exchangeName:        exch,
+		startTime:           time.Now(),
+		maxInventoryDisplay: maxInvDisp,
 	}
 }
 
@@ -273,12 +367,21 @@ func newServer(r dbReader, wsInterval time.Duration, corsOrigin string) *server 
 func (s *server) enrichSnapshot(snap *Snapshot) {
 	snap.MaxOpenOrders = s.maxOpenOrders
 	snap.MaxDrawdownPct = s.maxDrawdownPct
+	snap.MaxInventoryDisplay = s.maxInventoryDisplay
 	if hr, ok := s.r.(haltedReader); ok {
 		if h, err := hr.circuitHalted(); err == nil {
 			snap.CircuitBreakerHalted = h
 		}
 		if d, err := hr.drawdownPct(); err == nil {
 			snap.CurrentDrawdownPct = d
+		}
+	}
+	if fr, ok := s.r.(fillStatsReader); ok {
+		if f10, f60, ratio, fp10, err := fr.fillStats(); err == nil {
+			snap.FillCount10s = f10
+			snap.FillCount60s = f60
+			snap.MakerRatio = ratio
+			snap.FillsPer10s = fp10
 		}
 	}
 }
@@ -368,9 +471,36 @@ func (s *server) handleStatus(w http.ResponseWriter, r *http.Request) {
 			halted = h
 		}
 	}
+	// WHY: cheap single-column query for the timestamp instead of pulling
+	// 20 columns + cum_total subquery via latestSnapshot just to read ts_ns.
 	var lastTs int64
-	if snap, err := s.r.latestSnapshot(); err == nil {
+	if sr, ok := s.r.(*sqlReader); ok {
+		if ts, err := sr.lastSnapshotTs(); err == nil {
+			lastTs = ts
+		}
+	} else if snap, err := s.r.latestSnapshot(); err == nil {
+		// Fallback for stub readers in tests.
 		lastTs = snap.TsNs
+	}
+	// Phase 8: ws_connected proxy = any position_snapshots row in last 5s.
+	// pg_connected: if we got a snapshot scan (err==nil), the connection is up;
+	// also expose a fresh Ping when the reader is the live sqlReader.
+	wsConnected := false
+	if lastTs > 0 {
+		ageNs := time.Now().UnixNano() - lastTs
+		if ageNs >= 0 && ageNs < int64(5)*int64(time.Second) {
+			wsConnected = true
+		}
+	}
+	pgConnected := true
+	if sr, ok := s.r.(*sqlReader); ok && sr.db != nil {
+		if err := sr.db.Ping(); err != nil {
+			pgConnected = false
+		}
+	}
+	var lastAgeMs int64
+	if lastTs > 0 {
+		lastAgeMs = (time.Now().UnixNano() - lastTs) / int64(time.Millisecond)
 	}
 	out := map[string]interface{}{
 		"exchange": s.exchangeName,
@@ -379,9 +509,12 @@ func (s *server) handleStatus(w http.ResponseWriter, r *http.Request) {
 			"books5":  streamState,
 			"trades":  streamState,
 		},
-		"uptime_seconds":  int64(time.Since(s.startTime).Seconds()),
-		"last_event_ts_ns": lastTs,
-		"halted":          halted,
+		"uptime_seconds":       int64(time.Since(s.startTime).Seconds()),
+		"last_event_ts_ns":     lastTs,
+		"halted":               halted,
+		"ws_connected":         wsConnected,
+		"pg_connected":         pgConnected,
+		"last_snapshot_age_ms": lastAgeMs,
 	}
 	writeJSON(w, out)
 }
