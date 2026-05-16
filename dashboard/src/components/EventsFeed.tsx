@@ -37,32 +37,39 @@ export function EventsFeed({ events }: { events: SystemEvent[] }) {
         <span className="count">{events.length}</span>
       </div>
       <div className="panel-body">
-        {events.length === 0 ? (
-          <div className="empty-row" style={{ padding: '24px 16px', textAlign: 'center' }}>
-            <span
-              style={{
-                color: 'var(--text-dim)',
-                fontFamily: 'var(--font-mono)',
-                fontSize: 11,
-              }}
-            >
-              —
-            </span>
-          </div>
-        ) : (
-          <ul className="events-list">
-            {events.map((e, i) => (
-              <li className="event" key={i}>
-                <span className="ts">{fmtTime(e.ts)}</span>
-                <span className={`sev ${sevClass(e.severity)}`}>{e.severity || '—'}</span>
-                <span className="src">{e.source || '—'}</span>
-                <span className="msg" title={e.msg}>
-                  {e.msg || e.code || '—'}
-                </span>
-              </li>
-            ))}
-          </ul>
-        )}
+        {/* WHY: same table structure as TradesTable so both panels share an
+            identical natural height in the empty state and their data rows
+            align horizontally on the same baseline. */}
+        <table className="table">
+          <thead>
+            <tr>
+              <th className="col-time">Time</th>
+              <th className="col-sev">Sev</th>
+              <th className="col-src">Source</th>
+              <th>Event</th>
+            </tr>
+          </thead>
+          <tbody>
+            {events.length === 0 ? (
+              <tr className="empty-row">
+                <td colSpan={4}>—</td>
+              </tr>
+            ) : (
+              events.map((e, i) => (
+                <tr key={i}>
+                  <td className="col-time">{fmtTime(e.ts)}</td>
+                  <td className="col-sev">
+                    <span className={`sev ${sevClass(e.severity)}`}>{e.severity || '—'}</span>
+                  </td>
+                  <td className="col-src">{e.source || '—'}</td>
+                  <td className="msg" title={e.msg}>
+                    {e.msg || e.code || '—'}
+                  </td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
       </div>
     </div>
   );

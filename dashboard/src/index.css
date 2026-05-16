@@ -28,7 +28,11 @@ body,
 #root {
   margin: 0;
   padding: 0;
-  height: 100%;
+  /* WHY: no height:100%. With it, body filled the viewport and the dark
+     --bg-base showed below the .app, creating a "gap" between the bottom
+     panels and the footer. Both html and body inherit the dark bg so the
+     viewport stays dark below the content without forcing the layout to
+     match the viewport. */
   background: var(--bg-base);
   color: var(--text-primary);
   font-family: var(--font-sans);
@@ -46,6 +50,9 @@ button {
 .app {
   display: flex;
   flex-direction: column;
+  /* WHY: full viewport height so the bottom-row section's flex:1 can absorb
+     remaining space. The bottom panels then reach the footer naturally, and
+     the footer sits flush at the viewport bottom with no dark gap below. */
   min-height: 100vh;
   background: var(--bg-base);
 }
@@ -154,13 +161,10 @@ button {
   border-left: 1px solid var(--bg-border);
 }
 
-/* WHY: grid items stretch to the row's tallest by default. Panels with
-   panel-body { flex: 1 } then inflate to fill, producing empty space when
-   only one side has content. align-self: start lets each panel hug its
-   own content; the grid row collapses to the taller panel's natural size. */
-.row-2 > * {
-  align-self: start;
-}
+/* (Earlier `.row-2 > * { align-self: start }` rule removed. The bottom
+   panels now stretch to fill the flex:1 section so they reach the footer
+   with no gap, and matching panel structure — both with a header row —
+   keeps the two columns the same height in the empty state.) */
 
 /* ------- Metric Card ------- */
 .metric {
@@ -390,7 +394,9 @@ button {
   background: var(--bg-surface);
   display: flex;
   flex-direction: column;
-  max-height: 480px;
+  /* WHY: no max-height. Bottom-row panels stretch to fill the flex:1
+     section; the panel-body has overflow-y:auto and scrolls when content
+     exceeds the available height. */
 }
 
 .panel-header {
@@ -415,7 +421,9 @@ button {
 }
 
 .panel-body {
-  flex: 1;
+  /* WHY: no flex:1 — body sizes to its content. With flex:1 the body
+     stretched to fill any extra parent height, producing the dead space
+     under empty trades/events panels. */
   overflow-y: auto;
 }
 
@@ -474,7 +482,9 @@ button {
   color: var(--text-dim);
   font-family: var(--font-mono);
   font-size: 11px;
-  padding: 24px 0;
+  /* WHY: match normal data row padding (5px 16px). Earlier 24px 0 inflated
+     the empty trades panel so it stood taller than the empty events panel. */
+  padding: 5px 16px;
 }
 
 .events-list {
@@ -510,10 +520,31 @@ button {
   white-space: nowrap;
 }
 
-.event .sev {
+.event .sev,
+.table .sev {
   text-transform: uppercase;
   font-weight: 600;
   letter-spacing: 0.04em;
+  font-size: 10px;
+}
+
+/* WHY: EventsFeed now uses the .table structure so columns align with
+   TradesTable. New column classes scope width and color the same way. */
+.table .col-sev {
+  width: 70px;
+}
+.table .col-src {
+  width: 120px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  font-size: 10px;
+}
+.table .msg {
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 0;  /* lets ellipsis kick in inside the table cell */
 }
 
 .sev-critical {
