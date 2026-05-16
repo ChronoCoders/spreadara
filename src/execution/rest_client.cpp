@@ -378,7 +378,16 @@ AmendAck RestClient::amend_order(int64_t exchange_order_id, double new_price, do
     }
     // WHY: cancel succeeded but place failed — original is gone, no
     // replacement exists. Report critical and signal caller via cancelled_only.
-    a.cancelled_only = true;
+    //
+    // NOTE(phase6): the slot-side consumer of cancelled_only — i.e. an
+    // OrderManager caller that transitions the slot to CANCELED on
+    // ack.cancelled_only == true — is intentionally not wired yet.
+    // RestClient::amend_order is not called from OrderManager in Phase 5;
+    // amend is reserved for the Phase 6 FIX/REST hybrid execution path,
+    // where the amend call site WILL inspect cancelled_only and update
+    // slot state accordingly. Until that wiring lands, the half-state
+    // surface (this field, the critical log, the SystemEvent below) is
+    // observable from logs / db only.
     spdlog::critical("amend_half_state original_order_id={} replacement_client_order_id={}",
                      exchange_order_id, replacement_client_order_id);
     if (reporter_) {
