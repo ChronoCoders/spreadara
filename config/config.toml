@@ -64,6 +64,21 @@ price_move_ticks_threshold = 2
 quote_lifetime_ms = 5000
 quote_qty = 0.01
 
+[backtest]
+enabled = false
+data_dir = "data/historical"
+replay_speed = 100
+start_date = "2026-01-01"
+end_date = "2026-05-01"
+initial_capital = 10000.0
+risk_free_rate = 0.05
+enable_calibration = false
+
+[testnet]
+enabled = false
+ws_base_url = "wss://stream.binancefuture.com/ws"
+rest_base_url = "https://testnet.binancefuture.com"
+
 [risk]
 max_position = 0.1
 max_order_size = 0.05

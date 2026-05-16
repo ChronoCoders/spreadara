@@ -19,8 +19,10 @@ uint64_t mono_ns() {
 }
 }
 
-TickProcessor::TickProcessor(const infra::Config& cfg, EventRing& ring, strategy::SnapshotRing* snap_ring)
-    : cfg_(cfg), ring_(ring), snap_ring_(snap_ring),
+TickProcessor::TickProcessor(const infra::Config& cfg, EventRing& ring,
+                             strategy::SnapshotRing* snap_ring,
+                             strategy::SnapshotRing* record_ring)
+    : cfg_(cfg), ring_(ring), snap_ring_(snap_ring), record_ring_(record_ring),
       vol_(static_cast<std::size_t>(cfg.market_data.volatility_window)) {}
 
 TickProcessor::~TickProcessor() {
@@ -136,6 +138,14 @@ void TickProcessor::emit_snapshot(uint64_t exchange_ts_ms) {
             std::memcpy(msg.bytes.data(), fbb.GetBufferPointer(), sz);
             if (!snap_ring_->push(msg)) {
                 spdlog::warn("snapshot_ring_full bytes={}", sz);
+            }
+            // WHY: when --record is enabled, fan out the same bytes to a
+            // dedicated recorder ring. Distinct rings preserve the SPSC
+            // contract for each consumer (strategy and recorder).
+            if (record_ring_) {
+                if (!record_ring_->push(msg)) {
+                    spdlog::warn("record_ring_full bytes={}", sz);
+                }
             }
         } else {
             spdlog::warn("snapshot_oversize bytes={}", sz);

@@ -27,6 +27,7 @@ class PgReporter;
 namespace spreadara::execution {
 
 class OrderManagerTestPeer;
+class OrderManagerBacktestAccess;
 
 enum class OrderState : uint8_t {
     // WHY: NEW is the default-constructed sentinel — slot exists but no order
@@ -72,7 +73,7 @@ using FillEventRing = transport::SpscRingBuffer<FillMsg, 1024>;
 class OrderManager {
 public:
     OrderManager(const infra::Config& cfg,
-                 RestClient& rest,
+                 IRestClient& rest,
                  risk::PositionTracker& pt,
                  risk::RiskManager& rm,
                  risk::CircuitBreaker& cb,
@@ -106,6 +107,10 @@ public:
 
 private:
     friend class OrderManagerTestPeer;
+    // WHY: the Phase-6 BacktestRunner drives quotes inline (no threads) and
+    // needs the same private seam test peers use. Defined in
+    // backtest_runner.cpp.
+    friend class OrderManagerBacktestAccess;
 
     // WHY: kept private — only OrderManagerTestPeer (defined in the test TU)
     // can reach in. Production code cannot drive state machines from outside.
@@ -137,7 +142,7 @@ private:
     std::string make_cid();
 
     const infra::Config& cfg_;
-    RestClient& rest_;
+    IRestClient& rest_;
     risk::PositionTracker& pt_;
     risk::RiskManager& rm_;
     risk::CircuitBreaker& cb_;

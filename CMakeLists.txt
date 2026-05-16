@@ -12,7 +12,28 @@ endif()
 option(BUILD_TESTS "Build tests" ON)
 option(BUILD_BENCHMARKS "Build benchmarks" ON)
 
-add_compile_options(-O3 -march=native -Wall -Wextra -Werror)
+# WHY: Phase-6 AddressSanitizer / UndefinedBehaviorSanitizer build type. Use:
+#   cmake -DCMAKE_BUILD_TYPE=Asan ..
+# CMAKE_CXX_FLAGS_ASAN drops to -O1 to keep stacks readable while sanitizers run.
+set(CMAKE_CXX_FLAGS_ASAN
+    "-O1 -g -fno-omit-frame-pointer -fsanitize=address,undefined"
+    CACHE STRING "Asan build flags" FORCE)
+set(CMAKE_EXE_LINKER_FLAGS_ASAN
+    "-fsanitize=address,undefined"
+    CACHE STRING "Asan link flags" FORCE)
+set(CMAKE_SHARED_LINKER_FLAGS_ASAN
+    "-fsanitize=address,undefined"
+    CACHE STRING "Asan shared link flags" FORCE)
+set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS
+    Debug Release RelWithDebInfo MinSizeRel Asan)
+
+# WHY: keep Release strict (-Werror); under Asan, sanitizer-injected paths may
+# produce -Wmaybe-uninitialized at -O1, so drop -Werror to avoid spurious failures.
+if(CMAKE_BUILD_TYPE STREQUAL "Asan")
+    add_compile_options(-march=native -Wall -Wextra)
+else()
+    add_compile_options(-O3 -march=native -Wall -Wextra -Werror)
+endif()
 
 include(FetchContent)
 FetchContent_Declare(
@@ -88,8 +109,14 @@ set(LIB_SOURCES
     src/execution/rest_client.cpp
     src/execution/order_manager.cpp
     src/execution/fix_client.cpp
+    src/execution/simulated_rest_client.cpp
     src/db/pg_reporter.cpp
     src/dashboard/dashboard_server.cpp
+    src/backtest/historical_data_loader.cpp
+    src/backtest/replay_engine.cpp
+    src/backtest/backtest_reporter.cpp
+    src/backtest/backtest_runner.cpp
+    src/backtest/recorder.cpp
 )
 
 add_library(spreadara_lib STATIC ${LIB_SOURCES})
@@ -124,6 +151,12 @@ target_compile_definitions(spreadara_lib PUBLIC
 add_executable(spreadara src/main.cpp)
 target_link_libraries(spreadara PRIVATE spreadara_lib)
 
+# WHY: standalone Binance CSV → length-prefixed FB-archive converter. Not a
+# library member; lives in tools/ so we can build it without coupling the
+# main executable to the loader's CLI affordances.
+add_executable(convert_binance_csv tools/convert_binance_csv.cpp)
+target_link_libraries(convert_binance_csv PRIVATE spreadara_lib)
+
 if(BUILD_TESTS)
     enable_testing()
     find_package(GTest REQUIRED)
@@ -155,6 +188,19 @@ if(BUILD_TESTS)
     # 'chronocoder' + db 'chronocoder' exist (see README "Postgres setup for tests").
     set_tests_properties(test_reporter PROPERTIES
         ENVIRONMENT "SPREADARA_PG_DSN=host=/var/run/postgresql dbname=chronocoder user=chronocoder")
+
+    # Phase-6 unit tests for backtest building blocks.
+    add_executable(test_backtest tests/test_backtest.cpp)
+    target_link_libraries(test_backtest PRIVATE spreadara_lib GTest::gtest GTest::gtest_main)
+    add_test(NAME test_backtest COMMAND test_backtest)
+
+    # Phase-6 end-to-end integration test. Run from repo root so the synthetic
+    # fixture path under data/historical/ is discoverable.
+    add_executable(test_integration tests/test_integration.cpp)
+    target_link_libraries(test_integration PRIVATE spreadara_lib GTest::gtest GTest::gtest_main)
+    add_test(NAME test_integration
+             COMMAND test_integration
+             WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 endif()
 
 if(BUILD_BENCHMARKS)

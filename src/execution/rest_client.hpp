@@ -92,34 +92,52 @@ struct OpenOrdersSnapshot {
     int http_code{0};
 };
 
+// WHY: pure-virtual seam so OrderManager can be wired to a SimulatedRestClient
+// (backtest) without dragging in libcurl or live state. RestClient implements it.
+class IRestClient {
+public:
+    virtual ~IRestClient() = default;
+    virtual OrderAck place_order(const std::string& side, double qty, double price,
+                                 bool post_only, const std::string& client_order_id) = 0;
+    virtual OrderAck place_market_order(const std::string& side, double qty,
+                                        const std::string& client_order_id) = 0;
+    virtual CancelAck cancel_order(const std::string& client_order_id,
+                                   int64_t exchange_order_id) = 0;
+    virtual AmendAck amend_order(int64_t exchange_order_id, double new_price, double new_qty,
+                                 const std::string& side, bool post_only,
+                                 const std::string& replacement_client_order_id) = 0;
+    virtual PositionsSnapshot query_positions() = 0;
+    virtual OpenOrdersSnapshot query_open_orders() = 0;
+};
+
 // NOT thread-safe. One instance per thread, or external mutex.
 // WHY: persistent CURL* handles are reused across calls and are not safe
 // to share across threads without locking.
-class RestClient {
+class RestClient : public IRestClient {
 public:
     RestClient(const infra::Config& cfg, const Credentials& creds,
                risk::CircuitBreaker* cb);
-    ~RestClient();
+    ~RestClient() override;
 
     RestClient(const RestClient&) = delete;
     RestClient& operator=(const RestClient&) = delete;
 
     // side: "BUY" or "SELL". post_only=true => timeInForce=GTX.
     OrderAck place_order(const std::string& side, double qty, double price,
-                         bool post_only, const std::string& client_order_id);
+                         bool post_only, const std::string& client_order_id) override;
     // WHY: MARKET orders are the on_halt flatten path. Binance futures MARKET
     // implies IOC behavior; no price, no timeInForce field accepted.
     OrderAck place_market_order(const std::string& side, double qty,
-                                const std::string& client_order_id);
-    CancelAck cancel_order(const std::string& client_order_id, int64_t exchange_order_id);
+                                const std::string& client_order_id) override;
+    CancelAck cancel_order(const std::string& client_order_id, int64_t exchange_order_id) override;
     // WHY: Binance amend has narrow eligibility (LIMIT GTC/GTX only, no price+qty
     // jumping a tick band). On any non-2xx we fall back to cancel+place internally.
     AmendAck amend_order(int64_t exchange_order_id, double new_price, double new_qty,
                          const std::string& side, bool post_only,
-                         const std::string& replacement_client_order_id);
+                         const std::string& replacement_client_order_id) override;
 
-    PositionsSnapshot query_positions();
-    OpenOrdersSnapshot query_open_orders();
+    PositionsSnapshot query_positions() override;
+    OpenOrdersSnapshot query_open_orders() override;
 
     // Test seam: feeds a synthetic (http_code, body, endpoint) tuple through the
     // same response handler the real call uses. Exercises geoblock path without

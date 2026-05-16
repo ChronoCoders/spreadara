@@ -75,6 +75,19 @@ Config load_config(const std::string& path) {
     c.strategy.quote_lifetime_ms = tbl["strategy"]["quote_lifetime_ms"].value_or(5000);
     c.strategy.quote_qty = tbl["strategy"]["quote_qty"].value_or(0.01);
 
+    c.backtest.enabled = tbl["backtest"]["enabled"].value_or(false);
+    c.backtest.data_dir = tbl["backtest"]["data_dir"].value_or("data/historical");
+    c.backtest.replay_speed = tbl["backtest"]["replay_speed"].value_or(100);
+    c.backtest.start_date = tbl["backtest"]["start_date"].value_or("");
+    c.backtest.end_date = tbl["backtest"]["end_date"].value_or("");
+    c.backtest.initial_capital = tbl["backtest"]["initial_capital"].value_or(10000.0);
+    c.backtest.risk_free_rate = tbl["backtest"]["risk_free_rate"].value_or(0.05);
+    c.backtest.enable_calibration = tbl["backtest"]["enable_calibration"].value_or(false);
+
+    c.testnet.enabled = tbl["testnet"]["enabled"].value_or(false);
+    c.testnet.ws_base_url = tbl["testnet"]["ws_base_url"].value_or("");
+    c.testnet.rest_base_url = tbl["testnet"]["rest_base_url"].value_or("");
+
     c.risk.max_position = tbl["risk"]["max_position"].value_or(0.1);
     c.risk.max_order_size = tbl["risk"]["max_order_size"].value_or(0.05);
     c.risk.price_sanity_pct = tbl["risk"]["price_sanity_pct"].value_or(0.5);

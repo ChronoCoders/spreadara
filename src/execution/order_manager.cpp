@@ -56,7 +56,7 @@ bool is_valid_transition(OrderState from, OrderState to) {
     return false;
 }
 
-OrderManager::OrderManager(const infra::Config& cfg, RestClient& rest,
+OrderManager::OrderManager(const infra::Config& cfg, IRestClient& rest,
                            risk::PositionTracker& pt, risk::RiskManager& rm,
                            risk::CircuitBreaker& cb, strategy::QuoteRing* quote_ring)
     : cfg_(cfg), rest_(rest), pt_(pt), rm_(rm), cb_(cb), quote_ring_(quote_ring) {

@@ -81,6 +81,23 @@ struct Config {
     } strategy;
 
     struct {
+        bool enabled;
+        std::string data_dir;
+        int replay_speed;
+        std::string start_date;
+        std::string end_date;
+        double initial_capital;
+        double risk_free_rate;
+        bool enable_calibration;
+    } backtest;
+
+    struct {
+        bool enabled;
+        std::string ws_base_url;
+        std::string rest_base_url;
+    } testnet;
+
+    struct {
         double max_position;
         double max_order_size;
         double price_sanity_pct;
