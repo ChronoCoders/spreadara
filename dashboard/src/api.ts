@@ -72,7 +72,21 @@ export class WebSocketClient {
 
   close() {
     this.closed = true;
-    if (this.ws) this.ws.close();
+    if (!this.ws) return;
+    // WHY: closing a CONNECTING socket logs a noisy "closed before connection
+    // established" in the browser console. Detach handlers, then close once
+    // the socket either opens or fails naturally. React 18 StrictMode unmounts
+    // and re-mounts effects in dev, so a freshly-opened WS gets closed before
+    // the handshake completes on every page load — this avoids the noise.
+    const ws = this.ws;
+    ws.onmessage = null;
+    ws.onclose = null;
+    ws.onerror = null;
+    if (ws.readyState === WebSocket.CONNECTING) {
+      ws.onopen = () => ws.close();
+    } else {
+      ws.close();
+    }
   }
 
   private setState(s: WsState) {

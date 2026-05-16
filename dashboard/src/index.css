@@ -154,6 +154,14 @@ button {
   border-left: 1px solid var(--bg-border);
 }
 
+/* WHY: grid items stretch to the row's tallest by default. Panels with
+   panel-body { flex: 1 } then inflate to fill, producing empty space when
+   only one side has content. align-self: start lets each panel hug its
+   own content; the grid row collapses to the taller panel's natural size. */
+.row-2 > * {
+  align-self: start;
+}
+
 /* ------- Metric Card ------- */
 .metric {
   background: var(--bg-surface);
@@ -382,7 +390,6 @@ button {
   background: var(--bg-surface);
   display: flex;
   flex-direction: column;
-  min-height: 180px;
   max-height: 480px;
 }
 

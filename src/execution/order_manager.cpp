@@ -88,7 +88,10 @@ void OrderManager::stop() {
 std::string OrderManager::make_cid() {
     const uint64_t n = cid_counter_.fetch_add(1, std::memory_order_relaxed);
     char buf[64];
-    std::snprintf(buf, sizeof(buf), "spr-%llu-%llu",
+    // WHY: alphanumeric only (no hyphens / underscores). Binance accepts
+    // hyphenated CIDs but OKX rejects them with code 51000 ("Parameter
+    // clOrdId error"). 'z' is a non-digit separator that satisfies both.
+    std::snprintf(buf, sizeof(buf), "spr%lluz%llu",
                   static_cast<unsigned long long>(start_ms_),
                   static_cast<unsigned long long>(n));
     return std::string(buf);

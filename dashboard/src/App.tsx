@@ -319,7 +319,7 @@ export default function App() {
       </div>
 
       <footer className="footer">
-        <span>SPREADARA v0.6.0 · DSLabs</span>
+        <span>SPREADARA v0.7.0 · DSLabs</span>
         <span className={`right ${wsState}`}>
           {wsState === 'connected' ? 'CONNECTED' : 'DISCONNECTED'}
         </span>

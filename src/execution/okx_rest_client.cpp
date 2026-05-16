@@ -238,8 +238,14 @@ bool OkxRestClient::process_status(long http_code, const std::string& body,
         return false;
     }
 
-    spdlog::warn("okx_rest_fail stage=app exchange_code={} msg=\"{}\" endpoint={}",
-                 code_int, msg, endpoint);
+    // WHY: when top-level code is non-zero, OKX often puts the per-item
+    // reason in data[0].sCode/sMsg (especially for code="1" "All operations
+    // failed" on order placement). Pull that out so the log shows the
+    // actual cause, not just the generic envelope.
+    const auto pr = parse_data_first(body);
+    spdlog::warn(
+        "okx_rest_fail stage=app exchange_code={} msg=\"{}\" item_code={} item_msg=\"{}\" endpoint={}",
+        code_int, msg, pr.s_code, pr.s_msg, endpoint);
     return false;
 }
 

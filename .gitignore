@@ -12,3 +12,4 @@ dashboard_backend/dashboard_backend
 node_modules/
 dist/
 *.tsbuildinfo
+data/recorded/*.bin

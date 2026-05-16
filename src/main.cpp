@@ -395,7 +395,14 @@ int main(int argc, char** argv) {
         while (strat_running.load(std::memory_order_acquire)) {
             if (snap_ring->pop(msg)) {
                 if (aggregator.ingest(msg)) {
-                    mm.on_signals(aggregator.signals());
+                    const auto& sig = aggregator.signals();
+                    // WHY: push the live mid into PositionTracker so the
+                    // 1 Hz snapshot pusher writes a real mid_price to
+                    // position_snapshots, which the dashboard reads. Without
+                    // this, live runs show mid_price=0 forever even though
+                    // the tick processor is computing it correctly.
+                    if (sig.mid > 0.0) pos_tracker.update_mid(sig.mid);
+                    mm.on_signals(sig);
                 }
             } else {
                 // WHY: same rate-limit pattern as OrderManager::quote_loop —
