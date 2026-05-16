@@ -13,6 +13,10 @@
 #include "risk/risk_manager.hpp"
 #include "transport/spsc_ring_buffer.hpp"
 
+namespace spreadara::db {
+class PgReporter;
+}
+
 namespace spreadara::risk {
 
 struct RiskEventMsg {
@@ -45,6 +49,9 @@ public:
     // Test hook: run one monitor tick synchronously.
     void tick_for_test() { do_tick(std::chrono::steady_clock::now()); }
 
+    // WHY: optional Phase-5 hook. nullptr keeps existing tests unchanged.
+    void set_reporter(db::PgReporter* r) { reporter_ = r; }
+
 private:
     struct PendingTrigger {
         std::string trig;
@@ -71,6 +78,8 @@ private:
 
     std::atomic<bool> running_{false};
     std::thread monitor_thread_;
+
+    db::PgReporter* reporter_{nullptr};
 
     // Internal state for drawdown / unhedged tracking — only touched by monitor thread.
     double peak_equity_{0.0};

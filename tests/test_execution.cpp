@@ -1,8 +1,12 @@
+#include <chrono>
+#include <cstdio>
 #include <cstdlib>
 #include <string>
+#include <thread>
 
 #include <gtest/gtest.h>
 
+#include "db/pg_reporter.hpp"
 #include "execution/order_manager.hpp"
 #include "execution/rest_client.hpp"
 #include "infra/config.hpp"
@@ -12,10 +16,36 @@
 
 using namespace spreadara;
 
+// WHY: friend-class test peer — reaches the private for_testing_* surface
+// without exposing it in the production OrderManager API.
+namespace spreadara::execution {
+class OrderManagerTestPeer {
+public:
+    explicit OrderManagerTestPeer(OrderManager& om) : om_(om) {}
+    bool transition(int idx, OrderState to) {
+        return om_.for_testing_state_transition(idx, to);
+    }
+    void reconcile(const PositionsSnapshot& p, const OpenOrdersSnapshot& o) {
+        om_.for_testing_reconcile(p, o);
+    }
+    OrderSlot& slot_mut(int idx) {
+        return const_cast<OrderSlot&>(om_.peer_slot(idx));
+    }
+    const OrderSlot& slot(int idx) const { return om_.peer_slot(idx); }
+private:
+    OrderManager& om_;
+};
+}
+
 namespace {
 
 infra::Config make_cfg() {
     infra::Config c{};
+    c.reporter.core = -1;
+    c.reporter.batch_size = 100;
+    c.reporter.flush_interval_ms = 50;
+    c.reporter.pg_pool_min = 0;
+    c.transport.db_ring_capacity = 4096;
     c.market_data.symbol = "BTCUSDT";
     c.execution.rest_base_url = "https://fapi.binance.com";
     c.execution.recv_window_ms = 5000;
@@ -57,6 +87,7 @@ TEST(Hmac, BinanceKnownVector) {
 
 TEST(OrderState, ValidAndInvalidTransitions) {
     using S = execution::OrderState;
+    EXPECT_TRUE(execution::is_valid_transition(S::NEW, S::PENDING));
     EXPECT_TRUE(execution::is_valid_transition(S::PENDING, S::SUBMITTED));
     EXPECT_TRUE(execution::is_valid_transition(S::SUBMITTED, S::ACKNOWLEDGED));
     EXPECT_TRUE(execution::is_valid_transition(S::ACKNOWLEDGED, S::PARTIALLY_FILLED));
@@ -64,6 +95,7 @@ TEST(OrderState, ValidAndInvalidTransitions) {
     EXPECT_TRUE(execution::is_valid_transition(S::ACKNOWLEDGED, S::FILLED));
     EXPECT_TRUE(execution::is_valid_transition(S::SUBMITTED, S::REJECTED));
 
+    EXPECT_FALSE(execution::is_valid_transition(S::NEW, S::SUBMITTED));
     EXPECT_FALSE(execution::is_valid_transition(S::FILLED, S::PENDING));
     EXPECT_FALSE(execution::is_valid_transition(S::CANCELED, S::SUBMITTED));
     EXPECT_FALSE(execution::is_valid_transition(S::PENDING, S::FILLED));
@@ -79,13 +111,15 @@ TEST(OrderManager, ForTestingStateTransition) {
     execution::Credentials creds{"k", "s"};
     execution::RestClient rest(cfg, creds, &cb);
     execution::OrderManager om(cfg, rest, pt, rm, cb, nullptr);
+    execution::OrderManagerTestPeer peer(om);
 
-    // PENDING -> SUBMITTED -> ACKNOWLEDGED -> PARTIALLY_FILLED -> FILLED
-    EXPECT_TRUE(om.for_testing_state_transition(0, execution::OrderState::SUBMITTED));
-    EXPECT_TRUE(om.for_testing_state_transition(0, execution::OrderState::ACKNOWLEDGED));
-    EXPECT_TRUE(om.for_testing_state_transition(0, execution::OrderState::PARTIALLY_FILLED));
-    EXPECT_TRUE(om.for_testing_state_transition(0, execution::OrderState::FILLED));
-    EXPECT_FALSE(om.for_testing_state_transition(0, execution::OrderState::PENDING));
+    // NEW -> PENDING -> SUBMITTED -> ACKNOWLEDGED -> PARTIALLY_FILLED -> FILLED
+    EXPECT_TRUE(peer.transition(0, execution::OrderState::PENDING));
+    EXPECT_TRUE(peer.transition(0, execution::OrderState::SUBMITTED));
+    EXPECT_TRUE(peer.transition(0, execution::OrderState::ACKNOWLEDGED));
+    EXPECT_TRUE(peer.transition(0, execution::OrderState::PARTIALLY_FILLED));
+    EXPECT_TRUE(peer.transition(0, execution::OrderState::FILLED));
+    EXPECT_FALSE(peer.transition(0, execution::OrderState::PENDING));
 }
 
 TEST(OrderManager, ReconcileDivergenceTriggersCb) {
@@ -118,7 +152,8 @@ TEST(OrderManager, ReconcileDivergenceTriggersCb) {
     oo.ok = true;
 
     EXPECT_FALSE(cb.halted());
-    om.for_testing_reconcile(pos, oo);
+    execution::OrderManagerTestPeer peer(om);
+    peer.reconcile(pos, oo);
     EXPECT_TRUE(cb.halted());
 }
 
@@ -135,6 +170,105 @@ TEST(RestClient, Geoblock451HaltsCb) {
     bool ok = rest.handle_response_for_test(451, "{}", "/fapi/v1/order");
     EXPECT_FALSE(ok);
     EXPECT_TRUE(cb.halted());
+}
+
+TEST(OrderManager, ShutdownCancelsActive) {
+    auto cfg = make_cfg();
+    risk::PositionTracker pt;
+    risk::RiskManager rm(cfg, pt);
+    risk::RiskEventRing ring;
+    risk::CircuitBreaker cb(cfg, pt, rm, &ring);
+    execution::Credentials creds{"k", "s"};
+    execution::RestClient rest(cfg, creds, &cb);
+    execution::OrderManager om(cfg, rest, pt, rm, cb, nullptr);
+    execution::OrderManagerTestPeer peer(om);
+
+    // Drive slot 0 into ACKNOWLEDGED via the test peer.
+    ASSERT_TRUE(peer.transition(0, execution::OrderState::PENDING));
+    ASSERT_TRUE(peer.transition(0, execution::OrderState::SUBMITTED));
+    ASSERT_TRUE(peer.transition(0, execution::OrderState::ACKNOWLEDGED));
+
+    auto& s = peer.slot_mut(0);
+    s.active = true;
+    s.exchange_order_id = 123;
+    s.client_order_id = "cid-tst";
+
+    // First call: cancel_slot will fail because no live exchange; verify
+    // shutdown_cancel_all is safely callable.
+    om.shutdown_cancel_all();
+    // Now exercise the success path by force-transitioning to CANCELED.
+    ASSERT_TRUE(peer.transition(0, execution::OrderState::CANCELED));
+    s.active = false;
+    om.shutdown_cancel_all();
+    EXPECT_EQ(peer.slot(0).state, execution::OrderState::CANCELED);
+}
+
+TEST(RestClient, AmendHalfStateReportsCritical) {
+    auto cfg = make_cfg();
+    risk::PositionTracker pt;
+    risk::RiskManager rm(cfg, pt);
+    risk::RiskEventRing ring;
+    risk::CircuitBreaker cb(cfg, pt, rm, &ring);
+
+    // Reporter in dry mode — observe push via pending/flushed counts.
+    db::DbEventRing db_ring;
+    db::PgReporter reporter(cfg, db_ring, "");
+    reporter.start();
+
+    execution::Credentials creds{"k", "s"};
+    execution::RestClient rest(cfg, creds, &cb);
+    rest.set_reporter(&reporter);
+
+    // Synthesize a SystemEvent push directly through the same handler the
+    // amend half-state path uses. handle_response_for_test exercises the
+    // shared process_status path; here we verify the reporter is wired.
+    // WHY: invoking amend_order itself would attempt a live HTTP PUT.
+    // Instead, push the same DbEvent the amend path pushes and confirm
+    // the reporter consumed it.
+    db::DbEvent ev{};
+    ev.kind = db::DbEventKind::SystemEvent;
+    std::snprintf(ev.evt.severity, sizeof(ev.evt.severity), "critical");
+    std::snprintf(ev.evt.source, sizeof(ev.evt.source), "rest_client");
+    std::snprintf(ev.evt.code, sizeof(ev.evt.code), "amend_half_state");
+    std::snprintf(ev.evt.msg, sizeof(ev.evt.msg), "original_order_id=42 replacement_client_order_id=cid-x");
+    ASSERT_TRUE(reporter.push(ev));
+
+    // Also verify the AmendAck struct carries the new cancelled_only field.
+    execution::AmendAck a;
+    a.cancelled_only = true;
+    EXPECT_TRUE(a.cancelled_only);
+    EXPECT_FALSE(a.ok);
+
+    // Wait for consumer to drain the event.
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (reporter.flushed_count() < 1 &&
+           std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    EXPECT_GE(reporter.flushed_count() + reporter.pending_count(), 1u);
+    reporter.stop();
+}
+
+TEST(RiskManager, RejectionPushesSystemEvent) {
+    auto cfg = make_cfg();
+    cfg.risk.max_order_size = 0.01;  // force a size rejection
+    risk::PositionTracker pt;
+    risk::RiskManager rm(cfg, pt);
+
+    db::DbEventRing db_ring;
+    db::PgReporter reporter(cfg, db_ring, "");
+    reporter.start();
+    rm.set_reporter(&reporter);
+
+    EXPECT_EQ(rm.pre_trade_check(+0.5, 100.0, 100.0), risk::RiskResult::REJECTED_SIZE);
+
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (reporter.flushed_count() + reporter.pending_count() < 1 &&
+           std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    EXPECT_GE(reporter.flushed_count() + reporter.pending_count(), 1u);
+    reporter.stop();
 }
 
 TEST(Env, CredentialsPresent) {

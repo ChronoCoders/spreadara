@@ -208,11 +208,12 @@ private:
         const char* p = static_cast<const char*>(data.data());
         const std::size_t n = data.size();
 
-        json_buf_.assign(p, n);
-        json_buf_.reserve(n + simdjson::SIMDJSON_PADDING);
-
         try {
-            simdjson::ondemand::document doc = parser_.iterate(json_buf_.data(), n, json_buf_.capacity());
+            // WHY: padded_string owns a buffer with the required SIMDJSON_PADDING
+            // bytes past the end; replaces the prior std::string-past-size()
+            // pattern that was technically UB.
+            simdjson::padded_string padded(p, n);
+            simdjson::ondemand::document doc = parser_.iterate(padded);
             dispatch(doc, ts_ns);
         } catch (const std::exception& e) {
             spdlog::warn("parse_error stream={} err={}", static_cast<int>(kind_), e.what());
@@ -344,7 +345,6 @@ private:
     ssl::context* ssl_ctx_ref_{nullptr};
     beast::flat_buffer buffer_;
     simdjson::ondemand::parser parser_;
-    std::string json_buf_;
     std::string host_;
     std::string port_;
     std::string target_;

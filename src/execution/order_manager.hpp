@@ -20,9 +20,20 @@ class CircuitBreaker;
 class RiskManager;
 }
 
+namespace spreadara::db {
+class PgReporter;
+}
+
 namespace spreadara::execution {
 
+class OrderManagerTestPeer;
+
 enum class OrderState : uint8_t {
+    // WHY: NEW is the default-constructed sentinel — slot exists but no order
+    // attempt yet. NEW -> PENDING is the only valid first transition; this
+    // routes the initial-state change through transition() so the audit log
+    // captures every placement.
+    NEW,
     PENDING,
     SUBMITTED,
     ACKNOWLEDGED,
@@ -45,7 +56,7 @@ struct OrderSlot {
     double price{0.0};
     double qty{0.0};
     double executed_qty{0.0};
-    OrderState state{OrderState::PENDING};
+    OrderState state{OrderState::NEW};
     uint64_t submit_ts_ns{0};
 };
 
@@ -78,6 +89,11 @@ public:
     // flattens inventory via IOC market order if |inv| > flatten_threshold.
     void on_halt();
 
+    // WHY: clean Ctrl-C path. Cancels active orders and (if |inv| >
+    // flatten_threshold) flattens inventory. Safe to call before start() —
+    // slots are inert.
+    void shutdown_cancel_all();
+
     // Called by the fill-applier thread peer (Phase 6 user-data stream injects here).
     // Phase 4: public so tests / mocks can inject synthetic fills.
     bool inject_fill(const risk::FillInput& f);
@@ -85,22 +101,20 @@ public:
     // Reconciliation entry point.
     void reconcile_now();
 
-    // Test seam: run the reconciliation comparison against synthetic snapshots
-    // instead of issuing live REST calls. Mirrors what reconcile_now() does
-    // after the rest_ calls return.
-    void for_testing_reconcile(const PositionsSnapshot& pos,
-                               const OpenOrdersSnapshot& oo);
-
-    // Test seam: drive a state transition manually. Returns true iff valid.
-    bool for_testing_state_transition(int slot_idx, OrderState to);
-
-    // Test seam: synchronously process one quote (bid, ask) without threads.
-    void for_testing_on_quote(double bid, double ask, double qty);
-
-    // Accessors for tests.
-    const OrderSlot& slot(int idx) const { return slots_[idx]; }
+    // WHY: optional Phase-5 hook. nullptr by default keeps existing tests intact.
+    void set_reporter(db::PgReporter* r) { reporter_ = r; }
 
 private:
+    friend class OrderManagerTestPeer;
+
+    // WHY: kept private — only OrderManagerTestPeer (defined in the test TU)
+    // can reach in. Production code cannot drive state machines from outside.
+    void for_testing_reconcile(const PositionsSnapshot& pos,
+                               const OpenOrdersSnapshot& oo);
+    bool for_testing_state_transition(int slot_idx, OrderState to);
+    void for_testing_on_quote(double bid, double ask, double qty);
+    const OrderSlot& peer_slot(int idx) const { return slots_[idx]; }
+
     enum SlotIdx : int { BID = 0, ASK = 1 };
 
     void quote_loop();
@@ -115,6 +129,9 @@ private:
 
     void transition(int slot_idx, OrderState to);
     void sync_open_orders();
+    // Shared cancel+flatten helper for on_halt() and shutdown_cancel_all().
+    // Caller MUST hold mu_. Returns counts via out params.
+    void cancel_and_flatten_locked(int& cancelled_out, bool& flattened_out);
     bool decode_quote(const strategy::QuoteMsg& msg, double& bid, double& ask,
                       double& qty) const;
     std::string make_cid();
@@ -127,6 +144,8 @@ private:
     strategy::QuoteRing* quote_ring_;
 
     OrderSlot slots_[2]{};
+
+    db::PgReporter* reporter_{nullptr};
 
     FillEventRing fill_ring_{};
 

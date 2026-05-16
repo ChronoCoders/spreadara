@@ -24,6 +24,13 @@ Config load_config(const std::string& path) {
         static_cast<std::size_t>(tbl["transport"]["risk_event_ring_capacity"].value_or<int64_t>(1024));
     c.transport.fill_ring_capacity =
         static_cast<std::size_t>(tbl["transport"]["fill_ring_capacity"].value_or<int64_t>(1024));
+    c.transport.db_ring_capacity =
+        static_cast<std::size_t>(tbl["transport"]["db_ring_capacity"].value_or<int64_t>(4096));
+
+    c.reporter.core = tbl["reporter"]["core"].value_or(-1);
+    c.reporter.batch_size = tbl["reporter"]["batch_size"].value_or(100);
+    c.reporter.flush_interval_ms = tbl["reporter"]["flush_interval_ms"].value_or(1000);
+    c.reporter.pg_pool_min = tbl["reporter"]["pg_pool_min"].value_or(2);
 
     c.runtime.ws_cpu_core = tbl["runtime"]["ws_cpu_core"].value_or(-1);
     c.runtime.processor_cpu_core = tbl["runtime"]["processor_cpu_core"].value_or(-1);

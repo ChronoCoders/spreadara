@@ -1,6 +1,8 @@
 #include <atomic>
+#include <chrono>
 #include <csignal>
 #include <cstdlib>
+#include <ctime>
 #include <iostream>
 #include <memory>
 #include <thread>
@@ -25,6 +27,7 @@
 #include "strategy/spread_model.hpp"
 #include "execution/rest_client.hpp"
 #include "execution/order_manager.hpp"
+#include "db/pg_reporter.hpp"
 
 namespace {
 std::atomic<bool> g_shutdown{false};
@@ -78,11 +81,70 @@ int main(int argc, char** argv) {
     mm.set_risk(&risk_mgr, &circuit_breaker);
     circuit_breaker.start();
 
+    // WHY: Phase-5 Postgres reporter. DSN comes ONLY from env. If unset, the
+    // reporter runs in dry mode (logs warn at startup; never blocks trading).
+    const char* pg_dsn_env = std::getenv("SPREADARA_PG_DSN");
+    const std::string pg_dsn = (pg_dsn_env && *pg_dsn_env) ? pg_dsn_env : "";
+    if (pg_dsn.empty()) {
+        spdlog::warn("SPREADARA_PG_DSN_unset reporter_dry_mode");
+    }
+    auto db_ring = std::make_unique<spreadara::db::DbEventRing>();
+    spreadara::db::PgReporter reporter(cfg, *db_ring, pg_dsn);
+    reporter.start();
+    circuit_breaker.set_reporter(&reporter);
+    // WHY: rejection-path observability — wired AFTER reporter exists,
+    // BEFORE the order_manager starts producing pre_trade_check traffic.
+    risk_mgr.set_reporter(&reporter);
+
     spreadara::execution::RestClient rest_client(cfg, creds, &circuit_breaker);
+    rest_client.set_reporter(&reporter);
     spreadara::execution::OrderManager order_manager(cfg, rest_client, pos_tracker,
                                                      risk_mgr, circuit_breaker,
                                                      quote_ring.get());
+    order_manager.set_reporter(&reporter);
     order_manager.start();
+
+    // Periodic position-snapshot + daily-pnl pusher. ~1 Hz.
+    std::atomic<bool> snap_running{true};
+    std::thread snap_thread([&] {
+        while (snap_running.load(std::memory_order_acquire)) {
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+            const uint64_t ts_ns =
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::system_clock::now().time_since_epoch()).count();
+            const double realized = pos_tracker.realized_pnl();
+            const double unreal = pos_tracker.unrealized_pnl();
+            const double fees = pos_tracker.total_fees();
+            spreadara::db::DbEvent ev{};
+            ev.kind = spreadara::db::DbEventKind::PositionSnapshot;
+            ev.snap.ts_ns = ts_ns;
+            ev.snap.inventory = pos_tracker.current_inventory();
+            ev.snap.avg_entry = pos_tracker.avg_entry();
+            ev.snap.realized = realized;
+            ev.snap.unrealized = unreal;
+            ev.snap.fees = fees;
+            ev.snap.mid = pos_tracker.last_mid();
+            (void)reporter.push(ev);
+
+            // WHY: push every second; the reporter coalesces same-date
+            // DailyPnl events in memory and only writes a row on UTC-day
+            // rollover (or final drain at shutdown).
+            const std::time_t tt = std::chrono::system_clock::to_time_t(
+                std::chrono::system_clock::now());
+            std::tm tm{};
+            gmtime_r(&tt, &tm);
+            const int32_t date_i =
+                (tm.tm_year + 1900) * 10000 + (tm.tm_mon + 1) * 100 + tm.tm_mday;
+            spreadara::db::DbEvent dev{};
+            dev.kind = spreadara::db::DbEventKind::DailyPnl;
+            dev.daily.date = date_i;
+            dev.daily.realized = realized;
+            dev.daily.unrealized = unreal;
+            dev.daily.fees = fees;
+            dev.daily.total = realized + unreal - fees;
+            (void)reporter.push(dev);
+        }
+    });
 
     std::atomic<bool> strat_running{true};
     std::thread strat_thread([&] {
@@ -117,6 +179,9 @@ int main(int argc, char** argv) {
     signals.async_wait([&](boost::system::error_code, int) {
         spdlog::info("signal_received shutting_down");
         g_shutdown.store(true);
+        // WHY: cancel live orders and (optionally) flatten BEFORE tearing
+        // down the WS / io_context so the REST client can still issue calls.
+        order_manager.shutdown_cancel_all();
         client.stop();
         ioc.stop();
     });
@@ -134,8 +199,11 @@ int main(int argc, char** argv) {
     processor.stop();
     strat_running.store(false, std::memory_order_release);
     if (strat_thread.joinable()) strat_thread.join();
+    snap_running.store(false, std::memory_order_release);
+    if (snap_thread.joinable()) snap_thread.join();
     order_manager.stop();
     circuit_breaker.stop();
+    reporter.stop();
     curl_global_cleanup();
     spdlog::shutdown();
     return 0;

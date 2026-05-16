@@ -11,6 +11,13 @@ snapshot_ring_capacity = 16384
 quote_ring_capacity = 16384
 risk_event_ring_capacity = 1024
 fill_ring_capacity = 1024
+db_ring_capacity = 4096
+
+[reporter]
+core = 6
+batch_size = 100
+flush_interval_ms = 1000
+pg_pool_min = 2
 
 [runtime]
 ws_cpu_core = 2

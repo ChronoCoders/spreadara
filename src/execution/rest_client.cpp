@@ -13,6 +13,7 @@
 #include <simdjson.h>
 #include <spdlog/spdlog.h>
 
+#include "db/pg_reporter.hpp"
 #include "risk/circuit_breaker.hpp"
 
 namespace spreadara::execution {
@@ -191,8 +192,12 @@ bool RestClient::process_status(long http_code, const std::string& body,
         // ignore parse errors
     }
     binance_code_out = bcode;
-    spdlog::warn("rest_request_fail stage=http http={} binance_code={} binance_msg=\"{}\" endpoint={}",
-                 http_code, bcode, bmsg, endpoint);
+    // WHY: http_code==0 means curl never got a response — signed_request
+    // already logged stage=curl. Suppress to avoid double-log.
+    if (http_code != 0) {
+        spdlog::warn("rest_request_fail stage=http http={} binance_code={} binance_msg=\"{}\" endpoint={}",
+                     http_code, bcode, bmsg, endpoint);
+    }
     return false;
 }
 
@@ -369,6 +374,27 @@ AmendAck RestClient::amend_order(int64_t exchange_order_id, double new_price, do
         a.price = new_price;
         a.qty = new_qty;
         a.client_order_id = replacement_client_order_id;
+        return a;
+    }
+    // WHY: cancel succeeded but place failed — original is gone, no
+    // replacement exists. Report critical and signal caller via cancelled_only.
+    a.cancelled_only = true;
+    spdlog::critical("amend_half_state original_order_id={} replacement_client_order_id={}",
+                     exchange_order_id, replacement_client_order_id);
+    if (reporter_) {
+        db::DbEvent ev{};
+        ev.kind = db::DbEventKind::SystemEvent;
+        ev.evt.ts_ns = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::system_clock::now().time_since_epoch()).count());
+        std::snprintf(ev.evt.severity, sizeof(ev.evt.severity), "critical");
+        std::snprintf(ev.evt.source, sizeof(ev.evt.source), "rest_client");
+        std::snprintf(ev.evt.code, sizeof(ev.evt.code), "amend_half_state");
+        std::snprintf(ev.evt.msg, sizeof(ev.evt.msg),
+                      "original_order_id=%lld replacement_client_order_id=%s",
+                      static_cast<long long>(exchange_order_id),
+                      replacement_client_order_id.c_str());
+        (void)reporter_->push(ev);
     }
     return a;
 }

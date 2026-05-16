@@ -20,7 +20,15 @@ struct Config {
         std::size_t quote_ring_capacity;
         std::size_t risk_event_ring_capacity;
         std::size_t fill_ring_capacity;
+        std::size_t db_ring_capacity;
     } transport;
+
+    struct {
+        int core;
+        int batch_size;
+        int flush_interval_ms;
+        int pg_pool_min;
+    } reporter;
 
     struct {
         int ws_cpu_core;

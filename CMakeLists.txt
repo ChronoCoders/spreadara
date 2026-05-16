@@ -30,6 +30,8 @@ find_package(fmt REQUIRED)
 find_package(CURL REQUIRED)
 find_package(OpenSSL REQUIRED)
 find_package(Threads REQUIRED)
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(LIBPQXX REQUIRED IMPORTED_TARGET libpqxx)
 
 find_program(FLATC_EXECUTABLE flatc REQUIRED)
 
@@ -86,6 +88,8 @@ set(LIB_SOURCES
     src/execution/rest_client.cpp
     src/execution/order_manager.cpp
     src/execution/fix_client.cpp
+    src/db/pg_reporter.cpp
+    src/dashboard/dashboard_server.cpp
 )
 
 add_library(spreadara_lib STATIC ${LIB_SOURCES})
@@ -110,6 +114,7 @@ target_link_libraries(spreadara_lib PUBLIC
     OpenSSL::Crypto
     Threads::Threads
     tomlplusplus::tomlplusplus
+    PkgConfig::LIBPQXX
 )
 
 target_compile_definitions(spreadara_lib PUBLIC
@@ -141,6 +146,15 @@ if(BUILD_TESTS)
     add_executable(test_execution tests/test_execution.cpp)
     target_link_libraries(test_execution PRIVATE spreadara_lib GTest::gtest GTest::gtest_main)
     add_test(NAME test_execution COMMAND test_execution)
+
+    add_executable(test_reporter tests/test_reporter.cpp)
+    target_link_libraries(test_reporter PRIVATE spreadara_lib GTest::gtest GTest::gtest_main)
+    add_test(NAME test_reporter COMMAND test_reporter)
+    # WHY: peer auth on this WSL Postgres uses the calling user. If the env var
+    # is set externally we honour it; the default below works when role
+    # 'chronocoder' + db 'chronocoder' exist (see README "Postgres setup for tests").
+    set_tests_properties(test_reporter PROPERTIES
+        ENVIRONMENT "SPREADARA_PG_DSN=host=/var/run/postgresql dbname=chronocoder user=chronocoder")
 endif()
 
 if(BUILD_BENCHMARKS)

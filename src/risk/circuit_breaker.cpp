@@ -1,7 +1,10 @@
 #include "risk/circuit_breaker.hpp"
 
+#include "db/pg_reporter.hpp"
+
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 
 #include <flatbuffers/flatbuffers.h>
@@ -129,6 +132,18 @@ void CircuitBreaker::set_halt_synchronously(const std::string& trig,
         first = true;
     }
     spdlog::critical("circuit_breaker_trigger first={} trigger={} detail={}", first, trig, detail);
+    if (reporter_) {
+        db::DbEvent ev{};
+        ev.kind = db::DbEventKind::SystemEvent;
+        ev.evt.ts_ns = ts_ns;
+        std::snprintf(ev.evt.severity, sizeof(ev.evt.severity), "critical");
+        std::snprintf(ev.evt.source, sizeof(ev.evt.source), "circuit_breaker");
+        std::snprintf(ev.evt.code, sizeof(ev.evt.code), "%s", trig.c_str());
+        std::snprintf(ev.evt.msg, sizeof(ev.evt.msg), "%s", detail.c_str());
+        if (!reporter_->push(ev)) {
+            spdlog::warn("db_ring_full kind=system_event source=circuit_breaker");
+        }
+    }
 }
 
 void CircuitBreaker::enqueue(const std::string& trig, const std::string& detail, uint64_t ts_ns) {

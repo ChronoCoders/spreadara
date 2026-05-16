@@ -12,6 +12,10 @@ namespace spreadara::risk {
 class CircuitBreaker;
 }
 
+namespace spreadara::db {
+class PgReporter;
+}
+
 namespace spreadara::execution {
 
 // Credentials struct passes the API key+secret as const refs.
@@ -46,6 +50,10 @@ struct CancelAck {
 
 struct AmendAck {
     bool ok{false};
+    // WHY: set when cancel succeeded but the replacement place_order failed —
+    // original is gone but no new order exists. Caller must transition the
+    // slot to CANCELED rather than the would-be-replacement state.
+    bool cancelled_only{false};
     int64_t exchange_order_id{0};
     std::string client_order_id;
     double price{0.0};
@@ -122,6 +130,9 @@ public:
     // Pure HMAC-SHA256 (hex lowercase). Exposed for tests.
     static std::string hmac_sha256_hex(const std::string& secret, const std::string& msg);
 
+    // WHY: optional Phase-5 hook. nullptr by default keeps existing tests intact.
+    void set_reporter(db::PgReporter* r) { reporter_ = r; }
+
 private:
     struct SignedResp {
         bool ok{false};
@@ -147,6 +158,8 @@ private:
 
     CURL* h_signed_write_{nullptr};
     CURL* h_signed_read_{nullptr};
+
+    db::PgReporter* reporter_{nullptr};
 };
 
 }

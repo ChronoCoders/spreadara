@@ -11,6 +11,7 @@
 #include "infra/cpu_affinity.hpp"
 #include "infra/rdtsc.hpp"
 #include "quote_update_generated.h"
+#include "db/pg_reporter.hpp"
 #include "risk/circuit_breaker.hpp"
 #include "risk/risk_manager.hpp"
 
@@ -18,6 +19,7 @@ namespace spreadara::execution {
 
 const char* to_str(OrderState s) {
     switch (s) {
+        case OrderState::NEW: return "NEW";
         case OrderState::PENDING: return "PENDING";
         case OrderState::SUBMITTED: return "SUBMITTED";
         case OrderState::ACKNOWLEDGED: return "ACKNOWLEDGED";
@@ -33,6 +35,10 @@ bool is_valid_transition(OrderState from, OrderState to) {
     using S = OrderState;
     if (from == to) return false;
     switch (from) {
+        case S::NEW:
+            // WHY: a freshly defaulted slot can only enter PENDING; everything
+            // else (CANCELED, REJECTED, etc.) requires going through a place_new.
+            return to == S::PENDING;
         case S::PENDING:
             return to == S::SUBMITTED || to == S::REJECTED;
         case S::SUBMITTED:
@@ -129,7 +135,10 @@ void OrderManager::quote_loop() {
                     cancel_slot(i);
                 }
             }
-            std::this_thread::yield();
+            // WHY: don't busy-spin on an empty quote ring; watchdog only
+            // needs ~ack_timeout granularity. 10ms keeps wake latency low
+            // while freeing the core for other work.
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
     }
 }
@@ -175,12 +184,16 @@ bool OrderManager::place_new(int slot_idx, double price, double qty) {
     s.price = price;
     s.qty = qty;
     s.executed_qty = 0.0;
-    s.state = OrderState::PENDING;
     s.active = true;
     s.submit_ts_ns = static_cast<uint64_t>(
         std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::steady_clock::now().time_since_epoch()).count());
 
+    // WHY: route NEW -> PENDING through transition() so the audit log captures
+    // the initial state too. Slots that have already cycled through a terminal
+    // state are reset back to NEW here so the next placement starts clean.
+    if (s.state != OrderState::NEW) s.state = OrderState::NEW;
+    transition(slot_idx, OrderState::PENDING);
     transition(slot_idx, OrderState::SUBMITTED);
     const char* side_str = (s.side > 0) ? "BUY" : "SELL";
     OrderAck a = rest_.place_order(side_str, qty, price, true, s.client_order_id);
@@ -243,6 +256,21 @@ void OrderManager::sync_open_orders() {
 }
 
 bool OrderManager::inject_fill(const risk::FillInput& f) {
+    // WHY: report fill to Postgres before applying — drop on full ring, never block.
+    if (reporter_) {
+        db::DbEvent ev{};
+        ev.kind = db::DbEventKind::Trade;
+        std::snprintf(ev.trade.order_id, sizeof(ev.trade.order_id), "%s", f.order_id.c_str());
+        ev.trade.side = static_cast<int8_t>(f.side);
+        ev.trade.price = f.price;
+        ev.trade.qty = f.qty;
+        ev.trade.fee = f.fee;
+        std::snprintf(ev.trade.fee_asset, sizeof(ev.trade.fee_asset), "%s", f.fee_asset.c_str());
+        ev.trade.ts_ns = f.timestamp_ns;
+        if (!reporter_->push(ev)) {
+            spdlog::warn("db_ring_full kind=trade order_id={}", f.order_id);
+        }
+    }
     std::lock_guard<std::mutex> lk(mu_);
     flatbuffers::FlatBufferBuilder fbb(128);
     auto oid = fbb.CreateString(f.order_id);
@@ -310,14 +338,14 @@ void OrderManager::fill_apply_loop() {
     }
 }
 
-void OrderManager::on_halt() {
-    std::lock_guard<std::mutex> lk(mu_);
-    spdlog::critical("on_halt invoked cancelling_outstanding");
+void OrderManager::cancel_and_flatten_locked(int& cancelled_out, bool& flattened_out) {
+    cancelled_out = 0;
+    flattened_out = false;
     for (int i = 0; i < 2; ++i) {
         auto& s = slots_[i];
         if (s.active && s.state != OrderState::CANCELED &&
             s.state != OrderState::FILLED && s.state != OrderState::REJECTED) {
-            cancel_slot(i);
+            if (cancel_slot(i)) ++cancelled_out;
         }
     }
     const double inv = pt_.current_inventory();
@@ -325,8 +353,29 @@ void OrderManager::on_halt() {
         const char* side = inv > 0 ? "SELL" : "BUY";
         const double qty = std::fabs(inv);
         spdlog::critical("flatten_market_order side={} qty={:.8f}", side, qty);
-        rest_.place_market_order(side, qty, make_cid());
+        const auto a = rest_.place_market_order(side, qty, make_cid());
+        flattened_out = a.ok;
     }
+}
+
+void OrderManager::on_halt() {
+    std::lock_guard<std::mutex> lk(mu_);
+    spdlog::critical("on_halt invoked cancelling_outstanding");
+    int cancelled = 0;
+    bool flattened = false;
+    cancel_and_flatten_locked(cancelled, flattened);
+}
+
+void OrderManager::shutdown_cancel_all() {
+    // WHY: safe to call before start() — slots default to inactive/NEW and
+    // the helper is a pure cancel/flatten over slot state. Shutdown is NOT a
+    // fault; we don't call cb_.notify_exception here.
+    std::lock_guard<std::mutex> lk(mu_);
+    int cancelled = 0;
+    bool flattened = false;
+    cancel_and_flatten_locked(cancelled, flattened);
+    spdlog::info("shutdown_cancel_all_complete cancelled={} flattened={}",
+                 cancelled, flattened);
 }
 
 void OrderManager::halt_watcher_loop() {

@@ -9,6 +9,8 @@
 #include "infra/config.hpp"
 #include "risk/position_tracker.hpp"
 
+namespace spreadara::db { class PgReporter; }
+
 namespace spreadara::risk {
 
 enum class RiskResult {
@@ -34,6 +36,9 @@ public:
     // Number of rejections recorded in the last 30 seconds.
     int consecutive_rejections_in_window(std::chrono::steady_clock::time_point now);
 
+    // WHY: optional Phase-5 hook. nullptr by default keeps existing tests intact.
+    void set_reporter(db::PgReporter* r) { reporter_ = r; }
+
 private:
     void record_attempt(std::chrono::steady_clock::time_point tp);
     void record_rejection(std::chrono::steady_clock::time_point tp);
@@ -46,6 +51,8 @@ private:
     std::deque<std::chrono::steady_clock::time_point> rejection_times_;
 
     std::atomic<int> open_order_count_{0};
+
+    db::PgReporter* reporter_{nullptr};
 };
 
 }

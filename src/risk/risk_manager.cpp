@@ -1,8 +1,12 @@
 #include "risk/risk_manager.hpp"
 
+#include <chrono>
 #include <cmath>
+#include <cstdio>
 
 #include <spdlog/spdlog.h>
+
+#include "db/pg_reporter.hpp"
 
 namespace spreadara::risk {
 
@@ -57,6 +61,7 @@ RiskResult RiskManager::pre_trade_check(double side_signed_qty, double price, do
     const double abs_qty = std::abs(side_signed_qty);
     const double inv = pt_.current_inventory();
     const double equity = pt_.equity();
+    const int open_orders = open_order_count_.load(std::memory_order_acquire);
 
     RiskResult result = RiskResult::APPROVED;
 
@@ -86,7 +91,7 @@ RiskResult RiskManager::pre_trade_check(double side_signed_qty, double price, do
             result = RiskResult::REJECTED_LOSS;
         }
         // 6. Open orders.
-        else if (open_order_count_.load(std::memory_order_acquire) >= cfg_.risk.max_open_orders) {
+        else if (open_orders >= cfg_.risk.max_open_orders) {
             result = RiskResult::REJECTED_OPEN_ORDERS;
         }
     }
@@ -98,7 +103,21 @@ RiskResult RiskManager::pre_trade_check(double side_signed_qty, double price, do
         }
         spdlog::warn("risk_reject reason={} qty={:.6f} price={:.4f} mid={:.4f} inv={:.6f} equity={:.4f} open_orders={}",
                      reason_str(result), side_signed_qty, price, current_mid, inv, equity,
-                     open_order_count_.load(std::memory_order_acquire));
+                     open_orders);
+        if (reporter_) {
+            db::DbEvent ev{};
+            ev.kind = db::DbEventKind::SystemEvent;
+            ev.evt.ts_ns = static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::system_clock::now().time_since_epoch()).count());
+            std::snprintf(ev.evt.severity, sizeof(ev.evt.severity), "warn");
+            std::snprintf(ev.evt.source, sizeof(ev.evt.source), "risk");
+            std::snprintf(ev.evt.code, sizeof(ev.evt.code), "%s", reason_str(result));
+            std::snprintf(ev.evt.msg, sizeof(ev.evt.msg),
+                          "qty=%.6f price=%.4f mid=%.4f inv=%.6f equity=%.4f open_orders=%d",
+                          side_signed_qty, price, current_mid, inv, equity, open_orders);
+            (void)reporter_->push(ev);
+        }
     }
     return result;
 }
