@@ -6,6 +6,20 @@
 namespace spreadara::infra {
 
 struct Config {
+    // Phase 7: generic exchange section. When [exchange].name is non-empty
+    // load_config() also populates the legacy market_data / execution / strategy
+    // fields below from these values, so downstream code paths keep working
+    // unchanged. cfg.exchange.name dispatches the adapter choice in main.cpp.
+    struct {
+        std::string name;            // "binance" | "okx" | ""
+        std::string symbol;
+        std::string ws_base_url;
+        std::string rest_base_url;
+        double contract_size{0.0};   // BTC per 1 contract (OKX only; 0 = N/A)
+        double tick_size{0.0};
+        double qty_step{0.0};
+    } exchange;
+
     struct {
         std::string symbol;
         std::string ws_base_url;

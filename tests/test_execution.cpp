@@ -108,7 +108,7 @@ TEST(OrderManager, ForTestingStateTransition) {
     risk::RiskManager rm(cfg, pt);
     risk::RiskEventRing ring;
     risk::CircuitBreaker cb(cfg, pt, rm, &ring);
-    execution::Credentials creds{"k", "s"};
+    execution::Credentials creds{"k", "s", ""};
     execution::RestClient rest(cfg, creds, &cb);
     execution::OrderManager om(cfg, rest, pt, rm, cb, nullptr);
     execution::OrderManagerTestPeer peer(om);
@@ -128,7 +128,7 @@ TEST(OrderManager, ReconcileDivergenceTriggersCb) {
     risk::RiskManager rm(cfg, pt);
     risk::RiskEventRing ring;
     risk::CircuitBreaker cb(cfg, pt, rm, &ring);
-    execution::Credentials creds{"k", "s"};
+    execution::Credentials creds{"k", "s", ""};
     execution::RestClient rest(cfg, creds, &cb);
     execution::OrderManager om(cfg, rest, pt, rm, cb, nullptr);
 
@@ -163,7 +163,7 @@ TEST(RestClient, Geoblock451HaltsCb) {
     risk::RiskManager rm(cfg, pt);
     risk::RiskEventRing ring;
     risk::CircuitBreaker cb(cfg, pt, rm, &ring);
-    execution::Credentials creds{"k", "s"};
+    execution::Credentials creds{"k", "s", ""};
     execution::RestClient rest(cfg, creds, &cb);
 
     EXPECT_FALSE(cb.halted());
@@ -178,7 +178,7 @@ TEST(OrderManager, ShutdownCancelsActive) {
     risk::RiskManager rm(cfg, pt);
     risk::RiskEventRing ring;
     risk::CircuitBreaker cb(cfg, pt, rm, &ring);
-    execution::Credentials creds{"k", "s"};
+    execution::Credentials creds{"k", "s", ""};
     execution::RestClient rest(cfg, creds, &cb);
     execution::OrderManager om(cfg, rest, pt, rm, cb, nullptr);
     execution::OrderManagerTestPeer peer(om);
@@ -215,7 +215,7 @@ TEST(RestClient, AmendHalfStateReportsCritical) {
     db::PgReporter reporter(cfg, db_ring, "");
     reporter.start();
 
-    execution::Credentials creds{"k", "s"};
+    execution::Credentials creds{"k", "s", ""};
     execution::RestClient rest(cfg, creds, &cb);
     rest.set_reporter(&reporter);
 

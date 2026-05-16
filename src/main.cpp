@@ -26,6 +26,7 @@
 #include "infra/logger.hpp"
 #include "infra/rdtsc.hpp"
 #include "market_data/binance_ws_client.hpp"
+#include "market_data/okx_ws_client.hpp"
 #include "market_data/tick_processor.hpp"
 #include "risk/circuit_breaker.hpp"
 #include "risk/position_tracker.hpp"
@@ -35,6 +36,7 @@
 #include "strategy/signal_aggregator.hpp"
 #include "strategy/spread_model.hpp"
 #include "execution/rest_client.hpp"
+#include "execution/okx_rest_client.hpp"
 #include "execution/order_manager.hpp"
 #include "db/pg_reporter.hpp"
 
@@ -62,12 +64,14 @@ int main(int argc, char** argv) {
     bool flag_backtest = false;
     bool flag_calibration_smoke = false;
     bool flag_record = false;
+    bool flag_validate_config = false;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         if (a == "--backtest") flag_backtest = true;
         else if (a == "--calibration-smoke" || a == "--calibration_smoke")
             flag_calibration_smoke = true;
         else if (a == "--record") flag_record = true;
+        else if (a == "--validate-config") flag_validate_config = true;
         else if (!a.empty() && a[0] != '-') cfg_path = a;
     }
 
@@ -79,9 +83,85 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    // Phase 7: --validate-config runs offline checks and exits. Done BEFORE
+    // logger init so PASS/FAIL goes to stdout, not the log file.
+    if (flag_validate_config) {
+        int fails = 0;
+        auto report = [&fails](const char* name, bool ok, const std::string& detail = "") {
+            if (ok) {
+                std::cout << "PASS " << name << '\n';
+            } else {
+                std::cout << "FAIL " << name << ": " << detail << '\n';
+                ++fails;
+            }
+        };
+
+        // 1. Exchange name set and known. Empty is permitted (back-compat
+        // tests construct Config directly with no exchange.name set) but
+        // unknown values are rejected to prevent typo-launching the wrong
+        // adapter with live keys.
+        const bool name_ok = cfg.exchange.name.empty() ||
+                             cfg.exchange.name == "binance" ||
+                             cfg.exchange.name == "okx";
+        report("exchange_name", name_ok,
+               "cfg.exchange.name must be 'binance', 'okx', or empty; got '" +
+                   cfg.exchange.name + "'");
+
+        // 2. URLs parseable (basic scheme check).
+        const std::string ws = cfg.market_data.ws_base_url;
+        report("ws_base_url", ws.rfind("wss://", 0) == 0, "expect wss:// scheme: " + ws);
+        const std::string rs = cfg.execution.rest_base_url;
+        report("rest_base_url", rs.rfind("https://", 0) == 0, "expect https:// scheme: " + rs);
+
+        // 3. Numeric ranges sane.
+        report("min_tick_positive", cfg.strategy.min_tick > 0.0,
+               "min_tick=" + std::to_string(cfg.strategy.min_tick));
+        report("qty_step_positive", cfg.strategy.qty_step > 0.0,
+               "qty_step=" + std::to_string(cfg.strategy.qty_step));
+        report("symbol_set", !cfg.market_data.symbol.empty(), "market_data.symbol empty");
+
+        // 4. Env vars (per-exchange).
+        if (cfg.exchange.name == "okx") {
+            for (const char* var : {"SPREADARA_OKX_API_KEY",
+                                    "SPREADARA_OKX_API_SECRET",
+                                    "SPREADARA_OKX_PASSPHRASE"}) {
+                const char* v = std::getenv(var);
+                report(var, v != nullptr && *v != '\0', "env var unset");
+            }
+        } else if (cfg.exchange.name == "binance" || cfg.exchange.name.empty()) {
+            for (const char* var : {"SPREADARA_API_KEY", "SPREADARA_API_SECRET"}) {
+                const char* v = std::getenv(var);
+                report(var, v != nullptr && *v != '\0', "env var unset");
+            }
+        }
+        const char* dsn = std::getenv("SPREADARA_PG_DSN");
+        report("SPREADARA_PG_DSN", dsn != nullptr && *dsn != '\0', "env var unset");
+
+        // 5. OKX-specific: contract_size must be > 0.
+        if (cfg.exchange.name == "okx") {
+            report("contract_size_positive", cfg.exchange.contract_size > 0.0,
+                   "exchange.contract_size must be > 0 for OKX");
+        }
+
+        return fails == 0 ? 0 : 1;
+    }
+
     spreadara::infra::init_logger(cfg.logging.level, cfg.logging.file);
     spreadara::infra::calibrate_tsc();
-    spdlog::info("startup symbol={} tsc_ghz={:.3f}", cfg.market_data.symbol, spreadara::infra::tsc_ghz());
+    spdlog::info("startup symbol={} exchange={} tsc_ghz={:.3f}",
+                 cfg.market_data.symbol, cfg.exchange.name, spreadara::infra::tsc_ghz());
+
+    // WHY: hard-fail on unknown exchange.name. Empty is permitted (defaults to
+    // Binance adapter). Anything else (typo, unsupported exchange) exits 4 so
+    // a misconfigured production deploy can't silently launch the wrong
+    // adapter against live API keys.
+    if (!cfg.exchange.name.empty() &&
+        cfg.exchange.name != "binance" &&
+        cfg.exchange.name != "okx") {
+        spdlog::critical("unknown_exchange_name name=\"{}\" supported=binance,okx",
+                         cfg.exchange.name);
+        return 4;
+    }
 
     // WHY: testnet URL+cred override happens BEFORE any client / credential
     // read. cfg is mutated in-place so all downstream wiring sees the swap.
@@ -155,13 +235,30 @@ int main(int argc, char** argv) {
 
     // WHY: credentials MUST come from env. Read once here so they never enter
     // any spdlog format call, error message, or config-derived code path.
-    const char* key_env = std::getenv(api_key_env.c_str());
-    const char* sec_env = std::getenv(api_secret_env.c_str());
-    if (!key_env || !*key_env || !sec_env || !*sec_env) {
-        spdlog::critical("missing_credentials need_env={},{}", api_key_env, api_secret_env);
-        return 2;
+    // Phase 7: OKX uses three env vars (key/secret/passphrase) under separate
+    // names. Binance path is untouched.
+    spreadara::execution::Credentials creds;
+    if (cfg.exchange.name == "okx") {
+        const char* key_env = std::getenv("SPREADARA_OKX_API_KEY");
+        const char* sec_env = std::getenv("SPREADARA_OKX_API_SECRET");
+        const char* pass_env = std::getenv("SPREADARA_OKX_PASSPHRASE");
+        if (!key_env || !*key_env || !sec_env || !*sec_env || !pass_env || !*pass_env) {
+            spdlog::critical("missing_credentials need_env=SPREADARA_OKX_API_KEY,SPREADARA_OKX_API_SECRET,SPREADARA_OKX_PASSPHRASE");
+            return 2;
+        }
+        creds.api_key = key_env;
+        creds.api_secret = sec_env;
+        creds.api_passphrase = pass_env;
+    } else {
+        const char* key_env = std::getenv(api_key_env.c_str());
+        const char* sec_env = std::getenv(api_secret_env.c_str());
+        if (!key_env || !*key_env || !sec_env || !*sec_env) {
+            spdlog::critical("missing_credentials need_env={},{}", api_key_env, api_secret_env);
+            return 2;
+        }
+        creds.api_key = key_env;
+        creds.api_secret = sec_env;
     }
-    spreadara::execution::Credentials creds{key_env, sec_env};
 
     curl_global_init(CURL_GLOBAL_DEFAULT);
 
@@ -221,9 +318,27 @@ int main(int argc, char** argv) {
     // BEFORE the order_manager starts producing pre_trade_check traffic.
     risk_mgr.set_reporter(&reporter);
 
-    spreadara::execution::RestClient rest_client(cfg, creds, &circuit_breaker);
-    rest_client.set_reporter(&reporter);
-    spreadara::execution::OrderManager order_manager(cfg, rest_client, pos_tracker,
+    // Phase 7: REST adapter dispatch on cfg.exchange.name. Both implement
+    // IRestClient; OrderManager takes a reference and never sees the concrete
+    // type. Default (empty / "binance") preserves existing behavior.
+    std::unique_ptr<spreadara::execution::IRestClient> rest_iface;
+    spreadara::execution::RestClient* binance_rest_ptr = nullptr;
+    spreadara::execution::okx::OkxRestClient* okx_rest_ptr = nullptr;
+    if (cfg.exchange.name == "okx") {
+        auto p = std::make_unique<spreadara::execution::okx::OkxRestClient>(
+            cfg, creds, &circuit_breaker);
+        okx_rest_ptr = p.get();
+        okx_rest_ptr->set_reporter(&reporter);
+        rest_iface = std::move(p);
+    } else {
+        auto p = std::make_unique<spreadara::execution::RestClient>(
+            cfg, creds, &circuit_breaker);
+        binance_rest_ptr = p.get();
+        binance_rest_ptr->set_reporter(&reporter);
+        rest_iface = std::move(p);
+    }
+    (void)binance_rest_ptr; (void)okx_rest_ptr;
+    spreadara::execution::OrderManager order_manager(cfg, *rest_iface, pos_tracker,
                                                      risk_mgr, circuit_breaker,
                                                      quote_ring.get());
     order_manager.set_reporter(&reporter);
@@ -283,7 +398,9 @@ int main(int argc, char** argv) {
                     mm.on_signals(aggregator.signals());
                 }
             } else {
-                std::this_thread::yield();
+                // WHY: same rate-limit pattern as OrderManager::quote_loop —
+                // don't busy-spin on an empty ring.
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
             }
         }
     });
@@ -298,7 +415,21 @@ int main(int argc, char** argv) {
         g_shutdown.store(true);
     };
 
-    spreadara::market_data::BinanceWsClient client(ioc, cfg, *ring, fatal_cb);
+    // Phase 7: WS adapter dispatch. Both clients push into the same EventRing;
+    // TickProcessor and downstream consumers are exchange-agnostic.
+    std::unique_ptr<spreadara::market_data::BinanceWsClient> binance_client;
+    std::unique_ptr<spreadara::market_data::okx::OkxWsClient> okx_client;
+    auto stop_clients = [&] {
+        if (binance_client) binance_client->stop();
+        if (okx_client) okx_client->stop();
+    };
+    if (cfg.exchange.name == "okx") {
+        okx_client = std::make_unique<spreadara::market_data::okx::OkxWsClient>(
+            ioc, cfg, *ring, fatal_cb);
+    } else {
+        binance_client = std::make_unique<spreadara::market_data::BinanceWsClient>(
+            ioc, cfg, *ring, fatal_cb);
+    }
 
     boost::asio::signal_set signals(ioc, SIGINT, SIGTERM);
     signals.async_wait([&](boost::system::error_code, int) {
@@ -307,11 +438,12 @@ int main(int argc, char** argv) {
         // WHY: cancel live orders and (optionally) flatten BEFORE tearing
         // down the WS / io_context so the REST client can still issue calls.
         order_manager.shutdown_cancel_all();
-        client.stop();
+        stop_clients();
         ioc.stop();
     });
 
-    client.start();
+    if (okx_client) okx_client->start();
+    else binance_client->start();
 
     std::thread ws_thread([&] {
         if (cfg.runtime.ws_cpu_core >= 0) {

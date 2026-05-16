@@ -17,6 +17,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -34,6 +35,19 @@ type Snapshot struct {
 	Fees       float64 `json:"total_fees"`
 	Mid        float64 `json:"mid_price"`
 	CumTotal   float64 `json:"cum_total"`
+	// Phase 7: dashboard Operations view fields. BidPrice/AskPrice/SpreadBps
+	// and OpenOrders are placeholders — the C++ trading binary does not yet
+	// write them; left at zero until DbPositionSnapshot is extended.
+	// TODO(phase8): extend C++ DbPositionSnapshot to write bid/ask/spread and
+	// open-order count so these surface real values.
+	BidPrice             float64 `json:"bid_price"`
+	AskPrice             float64 `json:"ask_price"`
+	SpreadBps            float64 `json:"spread_bps"`
+	CircuitBreakerHalted bool    `json:"circuit_breaker_halted"`
+	OpenOrders           int     `json:"open_orders"`
+	MaxOpenOrders        int     `json:"max_open_orders"`
+	CurrentDrawdownPct   float64 `json:"current_drawdown_pct"`
+	MaxDrawdownPct       float64 `json:"max_drawdown_pct"`
 }
 
 type Trade struct {
@@ -67,6 +81,16 @@ type dbReader interface {
 	recentTrades(limit int) ([]Trade, error)
 	dailyPnl() ([]DailyPnl, error)
 	recentEvents(limit int) ([]SystemEvent, error)
+}
+
+// haltedReader is an optional capability for readers that can compute the
+// halted-state / drawdown from the events + snapshots tables. sqlReader
+// implements it; the test stubReader does not, so the server falls back to a
+// zero/false default in that case.
+type haltedReader interface {
+	circuitHalted() (bool, error)
+	drawdownPct() (float64, error)
+	wsStreamsUp() (bool, error)
 }
 
 type sqlReader struct{ db *sql.DB }
@@ -124,6 +148,70 @@ func (r *sqlReader) dailyPnl() ([]DailyPnl, error) {
 	return out, rows.Err()
 }
 
+// circuitHalted reports true if any of the halt-trigger codes was emitted in
+// the last hour. The trading binary does not write a per-state flag, so we
+// derive it from system_events here.
+func (r *sqlReader) circuitHalted() (bool, error) {
+	cutoff := time.Now().Add(-1*time.Hour).UnixNano()
+	var n int
+	err := r.db.QueryRow(
+		`SELECT COUNT(*) FROM system_events
+		 WHERE ts_ns >= $1
+		   AND code IN ('drawdown','unhedged','consecutive_rejections','ws_disconnect','exception')`,
+		cutoff,
+	).Scan(&n)
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
+// drawdownPct = (peak_equity - current_equity)/peak_equity * 100 over 24h.
+// equity is approximated as realized + unrealized - fees from position_snapshots.
+func (r *sqlReader) drawdownPct() (float64, error) {
+	cutoff := time.Now().Add(-24*time.Hour).UnixNano()
+	rows, err := r.db.Query(
+		`SELECT realized_pnl + unrealized_pnl - total_fees AS equity
+		 FROM position_snapshots WHERE ts_ns >= $1 ORDER BY ts_ns ASC`, cutoff)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+	peak := 0.0
+	current := 0.0
+	first := true
+	for rows.Next() {
+		var eq float64
+		if err := rows.Scan(&eq); err != nil {
+			return 0, err
+		}
+		if first || eq > peak {
+			peak = eq
+			first = false
+		}
+		current = eq
+	}
+	if peak <= 0 {
+		return 0, nil
+	}
+	return (peak - current) / peak * 100.0, nil
+}
+
+// wsStreamsUp reports true if a position_snapshots row exists within the last
+// 30s — the only liveness proxy available until the trading binary writes
+// per-stream health rows.
+func (r *sqlReader) wsStreamsUp() (bool, error) {
+	cutoff := time.Now().Add(-30*time.Second).UnixNano()
+	var n int
+	err := r.db.QueryRow(
+		`SELECT COUNT(*) FROM position_snapshots WHERE ts_ns >= $1`, cutoff,
+	).Scan(&n)
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
 func (r *sqlReader) recentEvents(limit int) ([]SystemEvent, error) {
 	rows, err := r.db.Query(
 		`SELECT ts_ns, severity, source, code, msg FROM system_events ORDER BY ts_ns DESC LIMIT $1`, limit)
@@ -146,10 +234,53 @@ type server struct {
 	r          dbReader
 	wsInterval time.Duration
 	corsOrigin string
+	// Phase 7: configuration surfaced via env vars and merged into responses.
+	maxOpenOrders  int
+	maxDrawdownPct float64
+	exchangeName   string
+	startTime      time.Time
 }
 
 func newServer(r dbReader, wsInterval time.Duration, corsOrigin string) *server {
-	return &server{r: r, wsInterval: wsInterval, corsOrigin: corsOrigin}
+	maxOO := 10
+	if v := os.Getenv("SPREADARA_MAX_OPEN_ORDERS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			maxOO = n
+		}
+	}
+	maxDd := 5.0
+	if v := os.Getenv("SPREADARA_MAX_DRAWDOWN_PCT"); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil && f > 0 {
+			maxDd = f
+		}
+	}
+	exch := os.Getenv("SPREADARA_EXCHANGE")
+	if exch == "" {
+		exch = "binance"
+	}
+	return &server{
+		r: r, wsInterval: wsInterval, corsOrigin: corsOrigin,
+		maxOpenOrders:  maxOO,
+		maxDrawdownPct: maxDd,
+		exchangeName:   exch,
+		startTime:      time.Now(),
+	}
+}
+
+// enrichSnapshot fills the Phase-7 derived fields on top of whatever the
+// dbReader returned. Splits cleanly so unit tests using stubReader (which
+// doesn't implement haltedReader) keep returning the base snapshot.
+func (s *server) enrichSnapshot(snap *Snapshot) {
+	snap.MaxOpenOrders = s.maxOpenOrders
+	snap.MaxDrawdownPct = s.maxDrawdownPct
+	if hr, ok := s.r.(haltedReader); ok {
+		if h, err := hr.circuitHalted(); err == nil {
+			snap.CircuitBreakerHalted = h
+		}
+		if d, err := hr.drawdownPct(); err == nil {
+			snap.CurrentDrawdownPct = d
+		}
+	}
 }
 
 // originAllowed implements the shared origin allowlist used by both CORS and
@@ -213,7 +344,46 @@ func (s *server) handleSnapshot(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	s.enrichSnapshot(&snap)
 	writeJSON(w, snap)
+}
+
+// handleStatus serves GET /api/v5/status — exchange-agnostic process health.
+// WS-stream up/down is a coarse "any snapshot in last 30s" probe because the
+// trading binary does not (yet) write per-stream health rows.
+func (s *server) handleStatus(w http.ResponseWriter, r *http.Request) {
+	s.cors(w, r)
+	if r.Method == http.MethodOptions {
+		return
+	}
+	streamState := "down"
+	if hr, ok := s.r.(haltedReader); ok {
+		if up, err := hr.wsStreamsUp(); err == nil && up {
+			streamState = "up"
+		}
+	}
+	halted := false
+	if hr, ok := s.r.(haltedReader); ok {
+		if h, err := hr.circuitHalted(); err == nil {
+			halted = h
+		}
+	}
+	var lastTs int64
+	if snap, err := s.r.latestSnapshot(); err == nil {
+		lastTs = snap.TsNs
+	}
+	out := map[string]interface{}{
+		"exchange": s.exchangeName,
+		"ws_streams": map[string]string{
+			"tickers": streamState,
+			"books5":  streamState,
+			"trades":  streamState,
+		},
+		"uptime_seconds":  int64(time.Since(s.startTime).Seconds()),
+		"last_event_ts_ns": lastTs,
+		"halted":          halted,
+	}
+	writeJSON(w, out)
 }
 
 func (s *server) handleTrades(w http.ResponseWriter, r *http.Request) {
@@ -339,6 +509,7 @@ func (s *server) handleWS(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				continue
 			}
+			s.enrichSnapshot(&snap)
 			payload, err := json.Marshal(snap)
 			if err != nil {
 				continue
@@ -454,6 +625,7 @@ func (s *server) routes() http.Handler {
 	mux.HandleFunc("/api/trades", s.handleTrades)
 	mux.HandleFunc("/api/pnl/daily", s.handlePnlDaily)
 	mux.HandleFunc("/api/events", s.handleEvents)
+	mux.HandleFunc("/api/v5/status", s.handleStatus)
 	mux.HandleFunc("/ws", s.handleWS)
 	// TODO(phase 7): auth.
 	return mux

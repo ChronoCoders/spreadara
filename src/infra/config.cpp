@@ -8,6 +8,14 @@ Config load_config(const std::string& path) {
     auto tbl = toml::parse_file(path);
     Config c{};
 
+    c.exchange.name = tbl["exchange"]["name"].value_or("");
+    c.exchange.symbol = tbl["exchange"]["symbol"].value_or("");
+    c.exchange.ws_base_url = tbl["exchange"]["ws_base_url"].value_or("");
+    c.exchange.rest_base_url = tbl["exchange"]["rest_base_url"].value_or("");
+    c.exchange.contract_size = tbl["exchange"]["contract_size"].value_or(0.0);
+    c.exchange.tick_size = tbl["exchange"]["tick_size"].value_or(0.0);
+    c.exchange.qty_step = tbl["exchange"]["qty_step"].value_or(0.0);
+
     c.market_data.symbol = tbl["market_data"]["symbol"].value_or("");
     c.market_data.ws_base_url = tbl["market_data"]["ws_base_url"].value_or("");
     c.market_data.rest_depth_url = tbl["market_data"]["rest_depth_url"].value_or("");
@@ -98,6 +106,18 @@ Config load_config(const std::string& path) {
     c.risk.max_unhedged_seconds = tbl["risk"]["max_unhedged_seconds"].value_or(30);
     c.risk.max_consecutive_rejections = tbl["risk"]["max_consecutive_rejections"].value_or(5);
     c.risk.circuit_breaker_poll_ms = tbl["risk"]["circuit_breaker_poll_ms"].value_or(100);
+
+    // Phase 7: when [exchange] is present, mirror its values into the legacy
+    // fields so the existing market_data / execution / strategy code keeps
+    // reading the same struct slots. Test fixtures that build Config directly
+    // leave exchange.name="" and are unaffected.
+    if (!c.exchange.name.empty()) {
+        if (!c.exchange.symbol.empty())       c.market_data.symbol = c.exchange.symbol;
+        if (!c.exchange.ws_base_url.empty())  c.market_data.ws_base_url = c.exchange.ws_base_url;
+        if (!c.exchange.rest_base_url.empty()) c.execution.rest_base_url = c.exchange.rest_base_url;
+        if (c.exchange.tick_size > 0.0)       c.strategy.min_tick = c.exchange.tick_size;
+        if (c.exchange.qty_step > 0.0)        c.strategy.qty_step = c.exchange.qty_step;
+    }
 
     return c;
 }

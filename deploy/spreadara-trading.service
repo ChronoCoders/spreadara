@@ -1,0 +1,38 @@
+[Unit]
+Description=Spreadara trading
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=spreadara
+Group=spreadara
+WorkingDirectory=/opt/spreadara
+ExecStart=/opt/spreadara/spreadara /opt/spreadara/config.toml
+EnvironmentFile=/opt/spreadara/env
+Restart=always
+RestartSec=5
+# WHY: 1=config_load_error, 2=missing_credentials, 3=no_backtest_archives,
+# 4=unknown_exchange_name. None are recoverable by restart — without this
+# systemd would spin-restart every 5s forever and fill the journal.
+RestartPreventExitStatus=1 2 3 4
+CPUAffinity=0-5
+Nice=-10
+# WHY: negative Nice values require CAP_SYS_NICE. Without this capability
+# the setpriority() call silently fails for non-root users and the binary
+# runs at the default nice value, defeating the elevated-priority intent.
+AmbientCapabilities=CAP_SYS_NICE
+LimitNOFILE=65536
+# Defense-in-depth. The binary writes only to /opt/spreadara/{spreadara.log,
+# data/recorded/...} and binds outbound TCP only. No new privileges, no
+# /home, no /tmp leak across services.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/spreadara
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

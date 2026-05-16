@@ -1,0 +1,27 @@
+[Unit]
+Description=Spreadara dashboard backend
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=spreadara
+Group=spreadara
+WorkingDirectory=/opt/spreadara
+ExecStart=/opt/spreadara/dashboard_backend
+EnvironmentFile=/opt/spreadara/env
+Restart=always
+RestartSec=5
+# WHY: dashboard exits non-zero on missing PG_DSN — same restart-loop concern.
+RestartPreventExitStatus=2
+# Defense-in-depth. Dashboard is read-only Postgres + HTTP server; no writes
+# to /opt/spreadara needed.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

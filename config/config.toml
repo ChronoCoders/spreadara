@@ -1,3 +1,17 @@
+# Phase 7: exchange-agnostic section. When [exchange].name is set, load_config
+# populates the legacy market_data / execution / strategy fields below from
+# these values. Switch to Binance by setting name = "binance" and editing the
+# corresponding URLs / symbol — the legacy fields are still consumed by code
+# paths that pre-date Phase 7.
+[exchange]
+name = "okx"
+symbol = "BTC-USDT-SWAP"
+ws_base_url = "wss://ws.okx.com:8443/ws/v5/public"
+rest_base_url = "https://www.okx.com"
+contract_size = 0.01
+tick_size = 0.1
+qty_step = 1
+
 [market_data]
 symbol = "BTCUSDT"
 ws_base_url = "wss://fstream.binance.com/ws"
@@ -75,9 +89,11 @@ risk_free_rate = 0.05
 enable_calibration = false
 
 [testnet]
+# OKX testnet (paper trading): the REST endpoint is the prod URL with the
+# x-simulated-trading: 1 header (set automatically). WS has a dedicated URL.
 enabled = false
-ws_base_url = "wss://stream.binancefuture.com/ws"
-rest_base_url = "https://testnet.binancefuture.com"
+ws_base_url = "wss://wspap.okx.com:8443/ws/v5/public?brokerId=9999"
+rest_base_url = "https://www.okx.com"
 
 [risk]
 max_position = 0.1
