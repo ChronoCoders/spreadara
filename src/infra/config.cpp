@@ -20,10 +20,13 @@ Config load_config(const std::string& path) {
         static_cast<std::size_t>(tbl["transport"]["snapshot_ring_capacity"].value_or<int64_t>(16384));
     c.transport.quote_ring_capacity =
         static_cast<std::size_t>(tbl["transport"]["quote_ring_capacity"].value_or<int64_t>(16384));
+    c.transport.risk_event_ring_capacity =
+        static_cast<std::size_t>(tbl["transport"]["risk_event_ring_capacity"].value_or<int64_t>(1024));
 
     c.runtime.ws_cpu_core = tbl["runtime"]["ws_cpu_core"].value_or(-1);
     c.runtime.processor_cpu_core = tbl["runtime"]["processor_cpu_core"].value_or(-1);
     c.runtime.strategy_cpu_core = tbl["runtime"]["strategy_cpu_core"].value_or(-1);
+    c.runtime.risk_cpu_core = tbl["runtime"]["risk_cpu_core"].value_or(-1);
 
     c.logging.level = tbl["logging"]["level"].value_or("info");
     c.logging.file = tbl["logging"]["file"].value_or("spreadara.log");
@@ -50,6 +53,17 @@ Config load_config(const std::string& path) {
     c.strategy.price_move_ticks_threshold = tbl["strategy"]["price_move_ticks_threshold"].value_or(2);
     c.strategy.quote_lifetime_ms = tbl["strategy"]["quote_lifetime_ms"].value_or(5000);
     c.strategy.quote_qty = tbl["strategy"]["quote_qty"].value_or(0.01);
+
+    c.risk.max_position = tbl["risk"]["max_position"].value_or(0.1);
+    c.risk.max_order_size = tbl["risk"]["max_order_size"].value_or(0.05);
+    c.risk.price_sanity_pct = tbl["risk"]["price_sanity_pct"].value_or(0.5);
+    c.risk.rate_limit_threshold = tbl["risk"]["rate_limit_threshold"].value_or(1000);
+    c.risk.max_daily_loss = tbl["risk"]["max_daily_loss"].value_or(500.0);
+    c.risk.max_open_orders = tbl["risk"]["max_open_orders"].value_or(10);
+    c.risk.max_drawdown_pct = tbl["risk"]["max_drawdown_pct"].value_or(5.0);
+    c.risk.max_unhedged_seconds = tbl["risk"]["max_unhedged_seconds"].value_or(30);
+    c.risk.max_consecutive_rejections = tbl["risk"]["max_consecutive_rejections"].value_or(5);
+    c.risk.circuit_breaker_poll_ms = tbl["risk"]["circuit_breaker_poll_ms"].value_or(100);
 
     return c;
 }

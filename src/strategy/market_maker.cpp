@@ -7,6 +7,8 @@
 #include <spdlog/spdlog.h>
 
 #include "quote_update_generated.h"
+#include "risk/circuit_breaker.hpp"
+#include "risk/risk_manager.hpp"
 
 namespace spreadara::strategy {
 
@@ -120,6 +122,18 @@ bool MarketMaker::on_signals(const Signals& sig) {
     const auto tp = now();
     const InvTier tier = classify_inventory(q);
     const VolRegime regime = classify_vol(sig.realized_vol);
+
+    // WHY: halt is a hard gate — no quotes emitted while circuit breaker is tripped.
+    if (cb_ && cb_->halted()) return false;
+
+    if (risk_) {
+        const double qty = cfg_.strategy.quote_qty;
+        const auto br = risk_->pre_trade_check(+qty, bid, sig.mid);
+        const auto ar = risk_->pre_trade_check(-qty, ask, sig.mid);
+        if (br != risk::RiskResult::APPROVED || ar != risk::RiskResult::APPROVED) {
+            return false;
+        }
+    }
 
     if (!should_requote(bid, ask, tier, regime, tp)) return false;
 

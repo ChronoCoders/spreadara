@@ -1,0 +1,14 @@
+namespace spreadara.schemas;
+
+table FillEvent {
+  order_id:string;
+  symbol:string;
+  side:int8;          // +1 buy, -1 sell
+  price:double;
+  qty:double;
+  fee:double;
+  fee_asset:string;
+  timestamp_ns:ulong;
+}
+
+root_type FillEvent;

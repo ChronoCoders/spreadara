@@ -1,0 +1,106 @@
+#include "risk/risk_manager.hpp"
+
+#include <cmath>
+
+#include <spdlog/spdlog.h>
+
+namespace spreadara::risk {
+
+namespace {
+constexpr std::chrono::seconds kRateWindow{60};
+constexpr std::chrono::seconds kRejectionWindow{30};
+
+const char* reason_str(RiskResult r) {
+    switch (r) {
+        case RiskResult::REJECTED_POSITION: return "position";
+        case RiskResult::REJECTED_SIZE: return "size";
+        case RiskResult::REJECTED_PRICE: return "price";
+        case RiskResult::REJECTED_RATE: return "rate";
+        case RiskResult::REJECTED_LOSS: return "loss";
+        case RiskResult::REJECTED_OPEN_ORDERS: return "open_orders";
+        case RiskResult::APPROVED: return "approved";
+    }
+    return "unknown";
+}
+}
+
+RiskManager::RiskManager(const infra::Config& cfg, PositionTracker& pt)
+    : cfg_(cfg), pt_(pt) {}
+
+void RiskManager::record_attempt(std::chrono::steady_clock::time_point tp) {
+    const auto cutoff = tp - kRateWindow;
+    while (!attempt_times_.empty() && attempt_times_.front() < cutoff) {
+        attempt_times_.pop_front();
+    }
+    attempt_times_.push_back(tp);
+}
+
+void RiskManager::record_rejection(std::chrono::steady_clock::time_point tp) {
+    const auto cutoff = tp - kRejectionWindow;
+    while (!rejection_times_.empty() && rejection_times_.front() < cutoff) {
+        rejection_times_.pop_front();
+    }
+    rejection_times_.push_back(tp);
+}
+
+int RiskManager::consecutive_rejections_in_window(std::chrono::steady_clock::time_point now) {
+    std::lock_guard<std::mutex> lk(mu_);
+    const auto cutoff = now - kRejectionWindow;
+    while (!rejection_times_.empty() && rejection_times_.front() < cutoff) {
+        rejection_times_.pop_front();
+    }
+    return static_cast<int>(rejection_times_.size());
+}
+
+RiskResult RiskManager::pre_trade_check(double side_signed_qty, double price, double current_mid) {
+    const auto now = std::chrono::steady_clock::now();
+    const double abs_qty = std::abs(side_signed_qty);
+    const double inv = pt_.current_inventory();
+    const double equity = pt_.equity();
+
+    RiskResult result = RiskResult::APPROVED;
+
+    // 1. Position limit.
+    const double projected_inv = inv + side_signed_qty;
+    if (std::abs(projected_inv) > cfg_.risk.max_position) {
+        result = RiskResult::REJECTED_POSITION;
+    }
+    // 2. Order size.
+    else if (abs_qty > cfg_.risk.max_order_size) {
+        result = RiskResult::REJECTED_SIZE;
+    }
+    // 3. Price sanity (% deviation from mid).
+    else if (current_mid > 0.0 &&
+             std::abs(price - current_mid) / current_mid * 100.0 > cfg_.risk.price_sanity_pct) {
+        result = RiskResult::REJECTED_PRICE;
+    }
+    else {
+        // 4. Rate limit — needs lock for attempt ring update.
+        std::lock_guard<std::mutex> lk(mu_);
+        record_attempt(now);
+        if (static_cast<int>(attempt_times_.size()) > cfg_.risk.rate_limit_threshold) {
+            result = RiskResult::REJECTED_RATE;
+        }
+        // 5. Daily loss.
+        else if (equity < -cfg_.risk.max_daily_loss) {
+            result = RiskResult::REJECTED_LOSS;
+        }
+        // 6. Open orders.
+        else if (open_order_count_.load(std::memory_order_acquire) >= cfg_.risk.max_open_orders) {
+            result = RiskResult::REJECTED_OPEN_ORDERS;
+        }
+    }
+
+    if (result != RiskResult::APPROVED) {
+        {
+            std::lock_guard<std::mutex> lk(mu_);
+            record_rejection(now);
+        }
+        spdlog::warn("risk_reject reason={} qty={:.6f} price={:.4f} mid={:.4f} inv={:.6f} equity={:.4f} open_orders={}",
+                     reason_str(result), side_signed_qty, price, current_mid, inv, equity,
+                     open_order_count_.load(std::memory_order_acquire));
+    }
+    return result;
+}
+
+}

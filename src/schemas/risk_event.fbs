@@ -1,0 +1,10 @@
+namespace spreadara.schemas;
+
+table RiskEvent {
+  event_type:string;  // "halt", "rejection", "warning"
+  trigger:string;     // "drawdown", "unhedged", "ws_disconnect", "consecutive_rejections", "exception"
+  detail:string;
+  timestamp_ns:ulong;
+}
+
+root_type RiskEvent;

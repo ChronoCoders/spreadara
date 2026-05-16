@@ -37,6 +37,10 @@ set(FBS_SRC_SNAPSHOT ${CMAKE_SOURCE_DIR}/src/schemas/market_snapshot.fbs)
 set(FBS_GEN_SNAPSHOT ${CMAKE_BINARY_DIR}/generated/market_snapshot_generated.h)
 set(FBS_SRC_QUOTE ${CMAKE_SOURCE_DIR}/src/schemas/quote_update.fbs)
 set(FBS_GEN_QUOTE ${CMAKE_BINARY_DIR}/generated/quote_update_generated.h)
+set(FBS_SRC_FILL ${CMAKE_SOURCE_DIR}/src/schemas/fill_event.fbs)
+set(FBS_GEN_FILL ${CMAKE_BINARY_DIR}/generated/fill_event_generated.h)
+set(FBS_SRC_RISK ${CMAKE_SOURCE_DIR}/src/schemas/risk_event.fbs)
+set(FBS_GEN_RISK ${CMAKE_BINARY_DIR}/generated/risk_event_generated.h)
 file(MAKE_DIRECTORY ${CMAKE_BINARY_DIR}/generated)
 add_custom_command(
     OUTPUT ${FBS_GEN_SNAPSHOT}
@@ -50,7 +54,19 @@ add_custom_command(
     DEPENDS ${FBS_SRC_QUOTE}
     VERBATIM
 )
-add_custom_target(generate_fbs DEPENDS ${FBS_GEN_SNAPSHOT} ${FBS_GEN_QUOTE})
+add_custom_command(
+    OUTPUT ${FBS_GEN_FILL}
+    COMMAND ${FLATC_EXECUTABLE} --cpp -o ${CMAKE_BINARY_DIR}/generated ${FBS_SRC_FILL}
+    DEPENDS ${FBS_SRC_FILL}
+    VERBATIM
+)
+add_custom_command(
+    OUTPUT ${FBS_GEN_RISK}
+    COMMAND ${FLATC_EXECUTABLE} --cpp -o ${CMAKE_BINARY_DIR}/generated ${FBS_SRC_RISK}
+    DEPENDS ${FBS_SRC_RISK}
+    VERBATIM
+)
+add_custom_target(generate_fbs DEPENDS ${FBS_GEN_SNAPSHOT} ${FBS_GEN_QUOTE} ${FBS_GEN_FILL} ${FBS_GEN_RISK})
 
 set(LIB_SOURCES
     src/infra/config.cpp
@@ -64,6 +80,9 @@ set(LIB_SOURCES
     src/strategy/signal_aggregator.cpp
     src/strategy/spread_model.cpp
     src/strategy/market_maker.cpp
+    src/risk/position_tracker.cpp
+    src/risk/risk_manager.cpp
+    src/risk/circuit_breaker.cpp
 )
 
 add_library(spreadara_lib STATIC ${LIB_SOURCES})
@@ -111,6 +130,10 @@ if(BUILD_TESTS)
     add_executable(test_strategy tests/test_strategy.cpp)
     target_link_libraries(test_strategy PRIVATE spreadara_lib GTest::gtest GTest::gtest_main)
     add_test(NAME test_strategy COMMAND test_strategy)
+
+    add_executable(test_risk tests/test_risk.cpp)
+    target_link_libraries(test_risk PRIVATE spreadara_lib GTest::gtest GTest::gtest_main)
+    add_test(NAME test_risk COMMAND test_risk)
 endif()
 
 if(BUILD_BENCHMARKS)

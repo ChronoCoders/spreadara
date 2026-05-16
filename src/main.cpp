@@ -16,6 +16,9 @@
 #include "infra/rdtsc.hpp"
 #include "market_data/binance_ws_client.hpp"
 #include "market_data/tick_processor.hpp"
+#include "risk/circuit_breaker.hpp"
+#include "risk/position_tracker.hpp"
+#include "risk/risk_manager.hpp"
 #include "strategy/inventory_manager.hpp"
 #include "strategy/market_maker.hpp"
 #include "strategy/signal_aggregator.hpp"
@@ -55,6 +58,13 @@ int main(int argc, char** argv) {
     spreadara::strategy::SignalAggregator aggregator;
     spreadara::strategy::MarketMaker mm(cfg, spread_model, inv_mgr, quote_ring.get());
 
+    spreadara::risk::PositionTracker pos_tracker;
+    spreadara::risk::RiskManager risk_mgr(cfg, pos_tracker);
+    auto risk_event_ring = std::make_unique<spreadara::risk::RiskEventRing>();
+    spreadara::risk::CircuitBreaker circuit_breaker(cfg, pos_tracker, risk_mgr, risk_event_ring.get());
+    mm.set_risk(&risk_mgr, &circuit_breaker);
+    circuit_breaker.start();
+
     std::atomic<bool> strat_running{true};
     std::thread strat_thread([&] {
         if (cfg.runtime.strategy_cpu_core >= 0) {
@@ -75,8 +85,9 @@ int main(int argc, char** argv) {
     boost::asio::io_context ioc;
     g_ioc_ptr = &ioc;
 
-    auto fatal_cb = [] {
+    auto fatal_cb = [&circuit_breaker] {
         spdlog::critical("fatal_callback_triggered exiting");
+        circuit_breaker.notify_ws_disconnect_exhausted();
         if (g_ioc_ptr) g_ioc_ptr->stop();
         g_shutdown.store(true);
     };
@@ -104,6 +115,7 @@ int main(int argc, char** argv) {
     processor.stop();
     strat_running.store(false, std::memory_order_release);
     if (strat_thread.joinable()) strat_thread.join();
+    circuit_breaker.stop();
     curl_global_cleanup();
     spdlog::shutdown();
     return 0;

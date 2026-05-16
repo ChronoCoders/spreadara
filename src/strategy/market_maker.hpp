@@ -8,6 +8,11 @@
 #include "strategy/signal_aggregator.hpp"
 #include "strategy/spread_model.hpp"
 
+namespace spreadara::risk {
+class RiskManager;
+class CircuitBreaker;
+}
+
 namespace spreadara::strategy {
 
 struct QuoteState {
@@ -39,6 +44,11 @@ public:
     }
     void clear_clock_override() { clock_overridden_ = false; }
 
+    void set_risk(risk::RiskManager* rm, risk::CircuitBreaker* cb) {
+        risk_ = rm;
+        cb_ = cb;
+    }
+
 private:
     enum class InvTier : uint8_t { T0, T1, T2, T3 };
     enum class VolRegime : uint8_t { Low, Mid, High };
@@ -65,6 +75,9 @@ private:
 
     bool clock_overridden_{false};
     std::chrono::steady_clock::time_point clock_override_{};
+
+    risk::RiskManager* risk_{nullptr};
+    risk::CircuitBreaker* cb_{nullptr};
 };
 
 }
