@@ -8,5 +8,7 @@ compile_commands.json
 *.swp
 *~
 build-asan/
-build-asan/
 dashboard_backend/dashboard_backend
+node_modules/
+dist/
+*.tsbuildinfo

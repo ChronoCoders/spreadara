@@ -1,51 +1,329 @@
-import { useEffect, useState } from 'react';
-import { api, WebSocketClient, Snapshot, Trade, SystemEvent } from './api';
-import QuotePanel from './components/QuotePanel';
-import InventoryPanel from './components/InventoryPanel';
-import PnlPanel from './components/PnlPanel';
-import CircuitBreakerPanel from './components/CircuitBreakerPanel';
-import FillRatePanel from './components/FillRatePanel';
-import LatencyPanel from './components/LatencyPanel';
-import TradesTable from './components/TradesTable';
-import EventsFeed from './components/EventsFeed';
+import React, { useEffect, useMemo, useState } from 'react';
+import {
+  api,
+  WebSocketClient,
+  type Snapshot,
+  type Trade,
+  type SystemEvent,
+  type WsState,
+} from './api';
+import { Topbar } from './components/Topbar';
+import { MetricCard } from './components/MetricCard';
+import { QuoteBar } from './components/QuoteBar';
+import { ProgressBar } from './components/ProgressBar';
+import { Pill } from './components/Pill';
+import { TradesTable } from './components/TradesTable';
+import { EventsFeed } from './components/EventsFeed';
+
+// Snapshot fields the backend may optionally expose. Using a loose extension type
+// keeps strict TS happy while letting us read fields that aren't part of the
+// formal Snapshot interface yet.
+interface ExtSnapshot extends Snapshot {
+  spread_bps?: number;
+  max_inventory?: number;
+  bid_price?: number;
+  ask_price?: number;
+  bid_qty?: number;
+  ask_qty?: number;
+  open_orders?: number;
+  max_open_orders?: number;
+  current_drawdown?: number;
+  max_drawdown_pct?: number;
+  circuit_breaker?: string;
+  fill_count?: number;
+  maker_ratio?: number;
+  avg_spread_bps?: number;
+  fills_per_10s?: number;
+  volatility?: number;
+}
+
+const priceFmt = new Intl.NumberFormat('en-US', {
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 2,
+});
+const moneyFmt = new Intl.NumberFormat('en-US', {
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 2,
+});
+const btcFmt = new Intl.NumberFormat('en-US', {
+  minimumFractionDigits: 4,
+  maximumFractionDigits: 4,
+  signDisplay: 'exceptZero',
+});
+const btcUnsignedFmt = new Intl.NumberFormat('en-US', {
+  minimumFractionDigits: 4,
+  maximumFractionDigits: 4,
+});
+const pctFmt = new Intl.NumberFormat('en-US', {
+  minimumFractionDigits: 1,
+  maximumFractionDigits: 1,
+});
+
+function formatPrice(n: number): string {
+  if (!Number.isFinite(n)) return '—';
+  return priceFmt.format(n);
+}
+
+function signTone(n: number): 'green' | 'red' | 'muted' {
+  if (!Number.isFinite(n) || n === 0) return 'muted';
+  return n > 0 ? 'green' : 'red';
+}
+
+function signedMoney(n: number): string {
+  if (!Number.isFinite(n)) return '—';
+  const sign = n > 0 ? '+' : n < 0 ? '−' : '';
+  return `${sign}$${moneyFmt.format(Math.abs(n))}`;
+}
+
+function plainMoney(n: number): string {
+  if (!Number.isFinite(n)) return '—';
+  return `$${moneyFmt.format(n)}`;
+}
 
 export default function App() {
-  const [snap, setSnap] = useState<Snapshot | null>(null);
+  const [snap, setSnap] = useState<ExtSnapshot | null>(null);
   const [trades, setTrades] = useState<Trade[]>([]);
   const [events, setEvents] = useState<SystemEvent[]>([]);
+  const [wsState, setWsState] = useState<WsState>('disconnected');
 
   useEffect(() => {
-    const ws = new WebSocketClient((s) => setSnap(s));
+    const ws = new WebSocketClient(
+      (s) => setSnap(s as ExtSnapshot),
+      (state) => setWsState(state),
+    );
     ws.connect();
-    api.snapshot().then(setSnap).catch(() => {});
+    api
+      .snapshot()
+      .then((s) => setSnap(s as ExtSnapshot))
+      .catch(() => {});
     const poll = () => {
-      api.trades(20).then(setTrades).catch(() => {});
-      api.events(50).then(setEvents).catch(() => {});
+      api
+        .trades(20)
+        .then((t) => setTrades(t.slice(0, 20)))
+        .catch(() => {});
+      api
+        .events(50)
+        .then((e) => setEvents(e.slice(0, 50)))
+        .catch(() => {});
     };
     poll();
-    const id = setInterval(poll, 2000);
-    return () => { clearInterval(id); ws.close(); };
+    const id = setInterval(poll, 5000);
+    return () => {
+      clearInterval(id);
+      ws.close();
+    };
   }, []);
+
+  const s = snap;
+
+  const bid = useMemo(() => {
+    if (!s) return null;
+    if (typeof s.bid_price === 'number') {
+      return { price: s.bid_price, qty: typeof s.bid_qty === 'number' ? s.bid_qty : 0 };
+    }
+    return null;
+  }, [s]);
+
+  const ask = useMemo(() => {
+    if (!s) return null;
+    if (typeof s.ask_price === 'number') {
+      return { price: s.ask_price, qty: typeof s.ask_qty === 'number' ? s.ask_qty : 0 };
+    }
+    return null;
+  }, [s]);
+
+  const inventory = s?.inventory ?? 0;
+  const maxInventory = s?.max_inventory && s.max_inventory > 0 ? s.max_inventory : 1;
+  const realized = s?.realized_pnl ?? 0;
+  const unrealized = s?.unrealized_pnl ?? 0;
+  const fees = s?.total_fees ?? 0;
+  const cumTotal = s?.cum_total ?? 0;
+  const mid = s?.mid_price ?? NaN;
+  const spreadBps = s?.spread_bps;
+  const avgEntry = s?.avg_entry ?? 0;
+  const cb = (s?.circuit_breaker ?? 'ok').toLowerCase();
+  const cbHalted = cb === 'halt' || cb === 'halted' || cb === 'tripped';
+  const drawdown = s?.current_drawdown ?? 0;
+  const maxDrawdown = s?.max_drawdown_pct && s.max_drawdown_pct > 0 ? s.max_drawdown_pct : 5;
+  const openOrders = s?.open_orders ?? 0;
+  const maxOpenOrders =
+    s?.max_open_orders && s.max_open_orders > 0 ? s.max_open_orders : 10;
+  const fillCount = s?.fill_count ?? trades.length;
+  const makerRatio = s?.maker_ratio;
+  const avgSpreadBps = s?.avg_spread_bps;
+  const fillsPer10s = s?.fills_per_10s;
+  const volatility = s?.volatility;
+
+  const invTone = signTone(inventory);
 
   return (
     <div className="app">
-      <h1>spreadara dashboard</h1>
-      <div className="grid">
-        <QuotePanel snap={snap} />
-        <InventoryPanel snap={snap} />
-        <PnlPanel snap={snap} />
-        <CircuitBreakerPanel events={events} />
-        <FillRatePanel trades={trades} />
-        <LatencyPanel events={events} />
-        <div className="panel span-2">
-          <h2>last 20 trades</h2>
-          <TradesTable trades={trades} />
+      <Topbar wsState={wsState} />
+
+      {/* Top metric row */}
+      <div className="section">
+        <div className="row-4">
+          <MetricCard label="Mid">
+            <div className="metric-value">{Number.isFinite(mid) ? formatPrice(mid) : '—'}</div>
+            <div className="metric-sub">
+              SPREAD <span className="mono">{spreadBps !== undefined ? pctFmt.format(spreadBps) : '—'}</span> bps
+            </div>
+          </MetricCard>
+
+          <MetricCard label="Inventory">
+            <div className={`metric-value ${invTone}`}>
+              {Number.isFinite(inventory) ? btcFmt.format(inventory) : '—'}
+            </div>
+            <ProgressBar
+              value={inventory}
+              max={maxInventory}
+              tone={inventory > 0 ? 'green' : inventory < 0 ? 'red' : 'neutral'}
+              ratioText={`${btcUnsignedFmt.format(Math.abs(inventory))} / ${btcUnsignedFmt.format(maxInventory)}`}
+            />
+          </MetricCard>
+
+          <MetricCard label="Realized P&L">
+            <div className={`metric-value ${signTone(realized)}`}>{signedMoney(realized)}</div>
+            <div className="metric-sub">
+              FEES <span className="mono">{plainMoney(fees)}</span>
+            </div>
+          </MetricCard>
+
+          <MetricCard label="Circuit Breaker">
+            <div>
+              <Pill tone={cbHalted ? 'red' : 'green'}>{cbHalted ? 'HALT' : 'OK'}</Pill>
+            </div>
+            <div className="metric-sub-rows">
+              <ProgressBar
+                label="DD"
+                value={drawdown}
+                max={maxDrawdown}
+                tone="amber"
+                ratioText={`${pctFmt.format(drawdown)}% / ${pctFmt.format(maxDrawdown)}%`}
+              />
+              <ProgressBar
+                label="OOO"
+                value={openOrders}
+                max={maxOpenOrders}
+                tone="neutral"
+                ratioText={`${openOrders} / ${maxOpenOrders}`}
+              />
+            </div>
+          </MetricCard>
         </div>
-        <div className="panel span-4">
-          <h2>system events</h2>
+      </div>
+
+      {/* Quote bar */}
+      <div className="section">
+        <QuoteBar
+          bid={bid}
+          ask={ask}
+          formatPrice={formatPrice}
+          formatQty={(n) => btcUnsignedFmt.format(n)}
+        />
+      </div>
+
+      {/* Second metric row */}
+      <div className="section">
+        <div className="row-4">
+          <MetricCard label="Unrealized P&L">
+            <div className={`metric-value ${signTone(unrealized)}`}>{signedMoney(unrealized)}</div>
+            <div className="metric-sub-rows">
+              <div className="sub-row">
+                <span>Avg Entry</span>
+                <span className="val">{avgEntry > 0 ? formatPrice(avgEntry) : '—'}</span>
+              </div>
+              <div className="sub-row">
+                <span>Mark</span>
+                <span className="val">{Number.isFinite(mid) ? formatPrice(mid) : '—'}</span>
+              </div>
+              <div className="sub-row">
+                <span>Cum Total</span>
+                <span className="val">{signedMoney(cumTotal)}</span>
+              </div>
+            </div>
+          </MetricCard>
+
+          <MetricCard label="Fill Rate">
+            <div className="metric-value">{fillCount}</div>
+            <div className="metric-sub-rows">
+              <div className="sub-row">
+                <span>Maker Ratio</span>
+                <span className="val">
+                  {makerRatio !== undefined ? `${pctFmt.format(makerRatio * 100)}%` : '—'}
+                </span>
+              </div>
+              <div className="sub-row">
+                <span>Avg Spread</span>
+                <span className="val">
+                  {avgSpreadBps !== undefined ? `${pctFmt.format(avgSpreadBps)} bps` : '—'}
+                </span>
+              </div>
+              <div className="sub-row">
+                <span>Fills / 10s</span>
+                <span className="val">{fillsPer10s !== undefined ? fillsPer10s : '—'}</span>
+              </div>
+            </div>
+          </MetricCard>
+
+          <MetricCard label="Latency">
+            <div className="metric-value muted">— ms</div>
+            <div className="metric-sub-rows">
+              <div className="sub-row">
+                <span>P50</span>
+                <span className="val dim">—</span>
+              </div>
+              <div className="sub-row">
+                <span>P95</span>
+                <span className="val dim">—</span>
+              </div>
+              <div className="sub-row">
+                <span>P99</span>
+                <span className="val dim">—</span>
+              </div>
+              <div className="sub-row">
+                <span>WS Lag</span>
+                <span className="val dim">—</span>
+              </div>
+            </div>
+          </MetricCard>
+
+          <MetricCard label="A-S Parameters">
+            <div className="metric-value muted">γ —</div>
+            <div className="metric-sub-rows">
+              <div className="sub-row">
+                <span>k</span>
+                <span className="val dim">—</span>
+              </div>
+              <div className="sub-row">
+                <span>T</span>
+                <span className="val dim">—</span>
+              </div>
+              <div className="sub-row">
+                <span>Realized Vol</span>
+                <span className="val">
+                  {volatility !== undefined ? pctFmt.format(volatility) : '—'}
+                </span>
+              </div>
+            </div>
+          </MetricCard>
+        </div>
+      </div>
+
+      {/* Bottom row */}
+      <div className="section" style={{ flex: 1 }}>
+        <div className="row-2">
+          <TradesTable trades={trades} formatPrice={formatPrice} />
           <EventsFeed events={events} />
         </div>
       </div>
+
+      <footer className="footer">
+        <span>SPREADARA v0.6.0 · DSLabs</span>
+        <span className={`right ${wsState}`}>
+          {wsState === 'connected' ? 'CONNECTED' : 'DISCONNECTED'}
+        </span>
+      </footer>
     </div>
   );
 }

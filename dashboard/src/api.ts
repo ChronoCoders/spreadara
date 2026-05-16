@@ -53,11 +53,17 @@ export const api = {
   events: (limit = 100) => getJSON<SystemEvent[]>(`/api/events?limit=${limit}`),
 };
 
+export type WsState = 'connected' | 'disconnected';
+
 export class WebSocketClient {
   private ws: WebSocket | null = null;
   private backoff = 250;
   private closed = false;
-  constructor(private onMessage: (s: Snapshot) => void) {}
+  public state: WsState = 'disconnected';
+  constructor(
+    private onMessage: (s: Snapshot) => void,
+    private onState?: (s: WsState) => void,
+  ) {}
 
   connect() {
     this.closed = false;
@@ -69,18 +75,24 @@ export class WebSocketClient {
     if (this.ws) this.ws.close();
   }
 
+  private setState(s: WsState) {
+    this.state = s;
+    if (this.onState) this.onState(s);
+  }
+
   private open() {
     try {
       this.ws = new WebSocket(`${WS_BASE}/ws`);
     } catch {
+      this.setState('disconnected');
       this.scheduleReconnect();
       return;
     }
-    this.ws.onopen = () => { this.backoff = 250; };
+    this.ws.onopen = () => { this.backoff = 250; this.setState('connected'); };
     this.ws.onmessage = (e) => {
       try { this.onMessage(JSON.parse(e.data)); } catch { /* ignore */ }
     };
-    this.ws.onclose = () => { this.scheduleReconnect(); };
+    this.ws.onclose = () => { this.setState('disconnected'); this.scheduleReconnect(); };
     this.ws.onerror = () => { /* onclose will handle */ };
   }
 
