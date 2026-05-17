@@ -14,6 +14,7 @@
 
 #include "backtest/historical_data_loader.hpp"
 #include "backtest/replay_engine.hpp"
+#include "db/pg_reporter.hpp"
 #include "execution/order_manager.hpp"
 #include "execution/simulated_rest_client.hpp"
 #include "market_snapshot_generated.h"
@@ -46,7 +47,11 @@ namespace {
 bool path_lex_less(const std::string& a, const std::string& b) { return a < b; }
 
 // Run one backtest with the supplied (possibly tweaked) Config and archives.
-BacktestStats run_one(const infra::Config& cfg, const std::vector<std::string>& archives) {
+// db_reporter is optional — when non-null, fills + periodic snapshots are
+// pushed through the same PgReporter the live binary uses so the dashboard
+// can render replay results identically to a live session.
+BacktestStats run_one(const infra::Config& cfg, const std::vector<std::string>& archives,
+                      db::PgReporter* db_reporter = nullptr) {
     BacktestReporter reporter(cfg.backtest.initial_capital,
                               cfg.backtest.risk_free_rate,
                               cfg.reporter.flush_interval_ms > 0 ? cfg.reporter.flush_interval_ms : 1000);
@@ -69,6 +74,12 @@ BacktestStats run_one(const infra::Config& cfg, const std::vector<std::string>& 
     execution::SimulatedRestClient sim_rest(cfg, cfg.market_data.symbol);
     execution::OrderManager om(cfg, sim_rest, pt, rm, cb, &quote_ring);
 
+    // WHY: SimulatedRestClient doesn't populate FillInput.timestamp_ns, so
+    // trade rows would carry ts_ns=0 and the dashboard would render "—" for
+    // every replay fill. Capture the most recent record timestamp here and
+    // stamp it into the DB event on push.
+    uint64_t latest_record_ts_ns = 0;
+
     // WHY: route simulator fills directly to PositionTracker for synchronous
     // PnL — OrderManager's fill thread isn't running in single-threaded backtest.
     sim_rest.set_on_fill([&](const risk::FillInput& f) {
@@ -76,6 +87,21 @@ BacktestStats run_one(const infra::Config& cfg, const std::vector<std::string>& 
         const double mid = (pt.last_mid() > 0.0) ? pt.last_mid() : f.price;
         reporter.on_fill(f.price, /*spread*/ 0.0, /*maker*/ true);
         (void)mid;
+        if (db_reporter) {
+            db::DbEvent ev{};
+            ev.kind = db::DbEventKind::Trade;
+            std::snprintf(ev.trade.order_id, sizeof(ev.trade.order_id), "%s",
+                          f.order_id.c_str());
+            ev.trade.side = f.side;
+            ev.trade.price = f.price;
+            ev.trade.qty = f.qty;
+            ev.trade.fee = f.fee;
+            std::snprintf(ev.trade.fee_asset, sizeof(ev.trade.fee_asset), "%s",
+                          f.fee_asset.c_str());
+            ev.trade.ts_ns = (f.timestamp_ns > 0) ? f.timestamp_ns : latest_record_ts_ns;
+            ev.trade.is_maker = true;
+            (void)db_reporter->push(ev);
+        }
     });
 
     ReplayEngine engine(cfg);
@@ -93,6 +119,7 @@ BacktestStats run_one(const infra::Config& cfg, const std::vector<std::string>& 
 
     engine.set_on_record([&](const uint8_t* fb, std::size_t fb_sz, uint64_t ts_ns,
                              double bid, double ask, double bid_qty, double ask_qty) {
+        latest_record_ts_ns = ts_ns;
         // 1. Update simulator's view of the book (may emit fills).
         if (bid_qty <= 0.0) bid_qty = 0.001;
         if (ask_qty <= 0.0) ask_qty = 0.001;
@@ -119,13 +146,34 @@ BacktestStats run_one(const infra::Config& cfg, const std::vector<std::string>& 
         }
 
         // 4. Sample equity at the flush cadence — on the simulated clock.
-        if (last_sample_sim_ns == 0) {
-            last_sample_sim_ns = ts_ns;
+        const bool sample_now =
+            (last_sample_sim_ns == 0) ||
+            (ts_ns > last_sample_sim_ns &&
+             (ts_ns - last_sample_sim_ns) >= sample_interval_ns);
+        if (sample_now) {
             reporter.on_equity_sample(cfg.backtest.initial_capital + pt.equity());
-        } else if (ts_ns > last_sample_sim_ns &&
-                   (ts_ns - last_sample_sim_ns) >= sample_interval_ns) {
-            reporter.on_equity_sample(cfg.backtest.initial_capital + pt.equity());
             last_sample_sim_ns = ts_ns;
+            if (db_reporter) {
+                db::DbEvent ev{};
+                ev.kind = db::DbEventKind::PositionSnapshot;
+                ev.snap.ts_ns = ts_ns;
+                ev.snap.inventory = pt.current_inventory();
+                ev.snap.avg_entry = pt.avg_entry();
+                ev.snap.realized = pt.realized_pnl();
+                ev.snap.unrealized = pt.unrealized_pnl();
+                ev.snap.fees = pt.total_fees();
+                ev.snap.mid = (bid + ask) * 0.5;
+                ev.snap.best_bid = bid;
+                ev.snap.best_ask = ask;
+                ev.snap.spread_bps =
+                    (bid > 0.0) ? ((ask - bid) / ((bid + ask) * 0.5) * 10000.0) : 0.0;
+                ev.snap.bid_qty = bid_qty;
+                ev.snap.ask_qty = ask_qty;
+                ev.snap.gamma = cfg.strategy.gamma;
+                ev.snap.k = cfg.strategy.k;
+                ev.snap.T = cfg.strategy.horizon;
+                (void)db_reporter->push(ev);
+            }
         }
     });
 
@@ -167,16 +215,32 @@ BacktestStats BacktestRunner::run(const std::vector<std::string>& archives_in,
 // Free function the entrypoint actually calls — accepts cfg.
 BacktestStats run_backtest(const infra::Config& cfg,
                            const std::vector<std::string>& archives_in,
-                           const std::string& csv_path) {
+                           const std::string& csv_path,
+                           db::PgReporter* db_reporter) {
     auto archives = archives_in;
     std::sort(archives.begin(), archives.end(), path_lex_less);
-    BacktestStats s = run_one(cfg, archives);
+    BacktestStats s = run_one(cfg, archives, db_reporter);
 
     BacktestReporter dummy(cfg.backtest.initial_capital, cfg.backtest.risk_free_rate,
                            cfg.reporter.flush_interval_ms);
     dummy.write_csv(csv_path, s);
     spdlog::info("backtest_done pnl={:.4f} sharpe={:.4f} max_dd_pct={:.4f} fills={} maker_ratio={:.4f}",
                  s.total_pnl, s.sharpe_ratio, s.max_drawdown_pct, s.fill_count, s.maker_ratio);
+
+    if (db_reporter) {
+        const std::time_t tt = std::chrono::system_clock::to_time_t(
+            std::chrono::system_clock::now());
+        std::tm tm{};
+        gmtime_r(&tt, &tm);
+        db::DbEvent ev{};
+        ev.kind = db::DbEventKind::DailyPnl;
+        ev.daily.date = (tm.tm_year + 1900) * 10000 + (tm.tm_mon + 1) * 100 + tm.tm_mday;
+        ev.daily.realized = s.total_pnl;
+        ev.daily.unrealized = 0.0;
+        ev.daily.fees = 0.0;
+        ev.daily.total = s.total_pnl;
+        (void)db_reporter->push(ev);
+    }
     return s;
 }
 

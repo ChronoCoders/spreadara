@@ -7,6 +7,8 @@
 #include "backtest/backtest_reporter.hpp"
 #include "infra/config.hpp"
 
+namespace spreadara::db { class PgReporter; }
+
 namespace spreadara::backtest {
 
 // One-shot synchronous backtest harness. Wires:
@@ -34,9 +36,14 @@ public:
 };
 
 // Free-function entrypoints used by main.cpp and tests.
+// WHY: optional db_reporter — when non-null, simulated fills and periodic
+// position snapshots are pushed through the same PgReporter the live binary
+// uses, so the dashboard can show replay results. Defaults to nullptr for
+// existing callers (tests, calibration grid) that don't want PG side-effects.
 BacktestStats run_backtest(const infra::Config& cfg,
                            const std::vector<std::string>& archives,
-                           const std::string& csv_path = "backtest_results.csv");
+                           const std::string& csv_path = "backtest_results.csv",
+                           db::PgReporter* db_reporter = nullptr);
 
 BacktestStats run_calibration_smoke(const infra::Config& cfg,
                                     const std::vector<std::string>& archives,

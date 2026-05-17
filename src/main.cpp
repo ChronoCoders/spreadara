@@ -201,7 +201,22 @@ int main(int argc, char** argv) {
                       << " max_dd_pct=" << s.max_drawdown_pct
                       << " fills=" << s.fill_count << '\n';
         } else {
-            auto s = spreadara::backtest::run_backtest(cfg, archives);
+            // WHY: same PgReporter wiring as the live path so replay fills
+            // and snapshots land in the dashboard tables. Dry-mode (empty DSN)
+            // is preserved — reporter logs the warn and the backtest pushes
+            // are silently dropped, matching the live behaviour.
+            const char* pg_dsn_env = std::getenv("SPREADARA_PG_DSN");
+            const std::string pg_dsn = (pg_dsn_env && *pg_dsn_env) ? pg_dsn_env : "";
+            if (pg_dsn.empty()) {
+                spdlog::warn("SPREADARA_PG_DSN_unset backtest_dry_mode");
+            }
+            auto db_ring = std::make_unique<spreadara::db::DbEventRing>();
+            spreadara::db::PgReporter reporter(cfg, *db_ring, pg_dsn);
+            reporter.start();
+            auto s = spreadara::backtest::run_backtest(cfg, archives,
+                                                      "backtest_results.csv",
+                                                      &reporter);
+            reporter.stop();
             std::cout << "backtest_done pnl=" << s.total_pnl
                       << " sharpe=" << s.sharpe_ratio
                       << " max_dd_pct=" << s.max_drawdown_pct
