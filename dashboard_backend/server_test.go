@@ -464,6 +464,68 @@ func TestConfigEmptyRejected(t *testing.T) {
 	}
 }
 
+func TestBacktestCSVParse(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "backtest_results.csv")
+	body := "total_pnl,sharpe_ratio,max_drawdown_pct,fill_count,maker_ratio,avg_spread_captured_bps,initial_capital,final_equity\n" +
+		"-6.0845,-264.8155,0.0848,64,1.0000,0.0000,10000.0,9993.92\n"
+	if err := os.WriteFile(path, []byte(body), 0644); err != nil {
+		t.Fatal(err)
+	}
+	srv := newServer(&stubReader{}, 50*time.Millisecond, "")
+	srv.backtestCsv = path
+	ts := httptest.NewServer(srv.routes())
+	defer ts.Close()
+	resp, err := http.Get(ts.URL + "/api/backtest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var got []BacktestRow
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].FillCount != 64 || got[0].FinalEquity != 9993.92 {
+		t.Fatalf("unexpected rows: %+v", got)
+	}
+}
+
+func TestBacktestMissingFile(t *testing.T) {
+	srv := newServer(&stubReader{}, 50*time.Millisecond, "")
+	srv.backtestCsv = filepath.Join(t.TempDir(), "missing.csv")
+	ts := httptest.NewServer(srv.routes())
+	defer ts.Close()
+	resp, err := http.Get(ts.URL + "/api/backtest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	var got []BacktestRow
+	_ = json.NewDecoder(resp.Body).Decode(&got)
+	if len(got) != 0 {
+		t.Fatalf("expected empty array, got %d", len(got))
+	}
+}
+
+func TestBacktestRun(t *testing.T) {
+	srv := newServer(&stubReader{}, 50*time.Millisecond, "")
+	ran := 0
+	srv.backtestRunner = func() error { ran++; return nil }
+	ts := httptest.NewServer(srv.routes())
+	defer ts.Close()
+	resp, err := http.Post(ts.URL+"/api/backtest/run", "application/json", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 || ran != 1 {
+		t.Fatalf("status=%d ran=%d", resp.StatusCode, ran)
+	}
+}
+
 func TestCalibrationRunGetRejected(t *testing.T) {
 	srv := newServer(&stubReader{}, 50*time.Millisecond, "")
 	srv.calibrationRunner = func() error { return nil }

@@ -66,6 +66,17 @@ export interface FundingRate {
   funding_rate_8h: number;
 }
 
+export interface BacktestRow {
+  total_pnl: number;
+  sharpe_ratio: number;
+  max_drawdown_pct: number;
+  fill_count: number;
+  maker_ratio: number;
+  avg_spread_captured_bps: number;
+  initial_capital: number;
+  final_equity: number;
+}
+
 export interface CalibrationRow {
   gamma: number;
   k: number;
@@ -151,6 +162,8 @@ export const api = {
   fundingRate: () => getJSON<FundingRate>('/api/funding-rate'),
   calibration: () => getJSON<CalibrationRow[]>('/api/calibration'),
   calibrationRun: () => postJSON<{ status: string }>('/api/calibration/run'),
+  backtest: () => getJSON<BacktestRow[]>('/api/backtest'),
+  backtestRun: () => postJSON<{ status: string }>('/api/backtest/run'),
   status: () => getJSON<SystemStatus>('/api/v5/status'),
   alerts: () => getJSON<AlertRule[]>('/api/alerts'),
   alertUpsert: (rule: AlertRule) => postJSON<AlertRule>('/api/alerts', rule),

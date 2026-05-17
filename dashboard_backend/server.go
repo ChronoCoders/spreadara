@@ -131,6 +131,17 @@ type LogsResponse struct {
 	TotalLines int      `json:"total_lines"`
 }
 
+type BacktestRow struct {
+	TotalPnl              float64 `json:"total_pnl"`
+	SharpeRatio           float64 `json:"sharpe_ratio"`
+	MaxDrawdownPct        float64 `json:"max_drawdown_pct"`
+	FillCount             int     `json:"fill_count"`
+	MakerRatio            float64 `json:"maker_ratio"`
+	AvgSpreadCapturedBps  float64 `json:"avg_spread_captured_bps"`
+	InitialCapital        float64 `json:"initial_capital"`
+	FinalEquity           float64 `json:"final_equity"`
+}
+
 type CalibrationRow struct {
 	Gamma  float64 `json:"gamma"`
 	K      float64 `json:"k"`
@@ -512,6 +523,11 @@ type server struct {
 	alertFire  alertFirer
 	logPath    string
 	configPath string
+
+	// v0.12 additions: backtest results CSV + run forker. Mirrors the
+	// calibration pattern.
+	backtestCsv    string
+	backtestRunner func() error
 }
 
 func newServer(r dbReader, wsInterval time.Duration, corsOrigin string) *server {
@@ -529,7 +545,7 @@ func newServer(r dbReader, wsInterval time.Duration, corsOrigin string) *server 
 	}
 	exch := os.Getenv("SPREADARA_EXCHANGE")
 	if exch == "" {
-		exch = "binance"
+		exch = "okx"
 	}
 	maxInvDisp := 0.1
 	if v := os.Getenv("SPREADARA_MAX_INVENTORY_DISPLAY"); v != "" {
@@ -552,7 +568,70 @@ func newServer(r dbReader, wsInterval time.Duration, corsOrigin string) *server 
 		alertFire:           defaultAlertFirer,
 		logPath:             envStrLocal("SPREADARA_LOG_PATH", "logs/spreadara.log"),
 		configPath:          envStrLocal("SPREADARA_CONFIG_PATH", "config/config.toml"),
+		backtestCsv:         envStrLocal("SPREADARA_BACKTEST_CSV", "backtest_results.csv"),
+		backtestRunner:      defaultBacktestRunner,
 	}
+}
+
+func defaultBacktestRunner() error {
+	bin := envStrLocal("SPREADARA_BIN", "./spreadara")
+	cmd := exec.Command(bin, "--backtest")
+	cmd.Stdout = nil
+	cmd.Stderr = nil
+	return cmd.Start()
+}
+
+// readBacktestCSV parses the C++ backtest writer's summary CSV. Current
+// writer emits header + a single row per run (overwrites on each run), so
+// the result is 0 or 1 entries. Returned as a slice so the API stays
+// future-compatible with multi-row history.
+func readBacktestCSV(path string) ([]BacktestRow, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	rd := csv.NewReader(f)
+	rd.FieldsPerRecord = -1
+	records, err := rd.ReadAll()
+	if err != nil {
+		return nil, err
+	}
+	if len(records) <= 1 {
+		return []BacktestRow{}, nil
+	}
+	idx := map[string]int{}
+	for i, h := range records[0] {
+		idx[strings.ToLower(strings.TrimSpace(h))] = i
+	}
+	get := func(row []string, names ...string) string {
+		for _, n := range names {
+			if i, ok := idx[n]; ok && i < len(row) {
+				return strings.TrimSpace(row[i])
+			}
+		}
+		return ""
+	}
+	out := make([]BacktestRow, 0, len(records)-1)
+	for _, row := range records[1:] {
+		if len(row) == 0 {
+			continue
+		}
+		pnl, _ := strconv.ParseFloat(get(row, "total_pnl", "pnl"), 64)
+		sharpe, _ := strconv.ParseFloat(get(row, "sharpe_ratio", "sharpe"), 64)
+		dd, _ := strconv.ParseFloat(get(row, "max_drawdown_pct", "max_dd", "maxdd"), 64)
+		fills, _ := strconv.Atoi(get(row, "fill_count", "fills"))
+		maker, _ := strconv.ParseFloat(get(row, "maker_ratio"), 64)
+		spread, _ := strconv.ParseFloat(get(row, "avg_spread_captured_bps", "avg_spread_bps"), 64)
+		init, _ := strconv.ParseFloat(get(row, "initial_capital"), 64)
+		final, _ := strconv.ParseFloat(get(row, "final_equity"), 64)
+		out = append(out, BacktestRow{
+			TotalPnl: pnl, SharpeRatio: sharpe, MaxDrawdownPct: dd,
+			FillCount: fills, MakerRatio: maker, AvgSpreadCapturedBps: spread,
+			InitialCapital: init, FinalEquity: final,
+		})
+	}
+	return out, nil
 }
 
 func envStrLocal(name, def string) string {
@@ -974,6 +1053,39 @@ func (s *server) handleConfig(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (s *server) handleBacktest(w http.ResponseWriter, r *http.Request) {
+	s.cors(w, r)
+	if r.Method == http.MethodOptions {
+		return
+	}
+	rows, err := readBacktestCSV(s.backtestCsv)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			writeJSON(w, []BacktestRow{})
+			return
+		}
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, rows)
+}
+
+func (s *server) handleBacktestRun(w http.ResponseWriter, r *http.Request) {
+	s.cors(w, r)
+	if r.Method == http.MethodOptions {
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if err := s.backtestRunner(); err != nil {
+		writeStatusError(w, http.StatusInternalServerError, "spawn: "+err.Error())
+		return
+	}
+	writeJSON(w, map[string]string{"status": "started"})
+}
+
 func (s *server) handleOrders(w http.ResponseWriter, r *http.Request) {
 	s.cors(w, r)
 	if r.Method == http.MethodOptions {
@@ -1330,6 +1442,8 @@ func (s *server) routes() http.Handler {
 	mux.HandleFunc("/api/funding-rate", s.handleFundingRate)
 	mux.HandleFunc("/api/calibration", s.handleCalibration)
 	mux.HandleFunc("/api/calibration/run", s.handleCalibrationRun)
+	mux.HandleFunc("/api/backtest", s.handleBacktest)
+	mux.HandleFunc("/api/backtest/run", s.handleBacktestRun)
 	mux.HandleFunc("/api/alerts", s.handleAlerts)
 	mux.HandleFunc("/api/logs", s.handleLogs)
 	mux.HandleFunc("/api/config", s.handleConfig)
