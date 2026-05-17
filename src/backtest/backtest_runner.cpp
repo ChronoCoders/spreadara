@@ -74,11 +74,24 @@ BacktestStats run_one(const infra::Config& cfg, const std::vector<std::string>& 
     execution::SimulatedRestClient sim_rest(cfg, cfg.market_data.symbol);
     execution::OrderManager om(cfg, sim_rest, pt, rm, cb, &quote_ring);
 
-    // WHY: SimulatedRestClient doesn't populate FillInput.timestamp_ns, so
-    // trade rows would carry ts_ns=0 and the dashboard would render "—" for
-    // every replay fill. Capture the most recent record timestamp here and
-    // stamp it into the DB event on push.
-    uint64_t latest_record_ts_ns = 0;
+    // WHY: ReplayEngine emits ts_ns as small offsets from the recording's
+    // start (sub-day values that render as 1970-01-01 in the dashboard).
+    // The dashboard's recency filters (`ts_ns > now - 60s`) reject every
+    // backtest row when stamped with replay time. Anchor all DB events to
+    // wall-clock now so backtest data shows up in the "last 60s" panels.
+    // Counter-incremented so adjacent events keep monotonic ordering even
+    // when system_clock returns the same ns (backtest runs faster than the
+    // clock's resolution).
+    const auto wall_start = std::chrono::system_clock::now();
+    auto wall_now_ns = [&wall_start]() {
+        static uint64_t counter = 0;
+        const auto t = std::chrono::system_clock::now();
+        const uint64_t base = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                t.time_since_epoch()).count());
+        return base + (counter++);
+    };
+    (void)wall_start;
 
     // WHY: route simulator fills directly to PositionTracker for synchronous
     // PnL — OrderManager's fill thread isn't running in single-threaded backtest.
@@ -98,7 +111,7 @@ BacktestStats run_one(const infra::Config& cfg, const std::vector<std::string>& 
             ev.trade.fee = f.fee;
             std::snprintf(ev.trade.fee_asset, sizeof(ev.trade.fee_asset), "%s",
                           f.fee_asset.c_str());
-            ev.trade.ts_ns = (f.timestamp_ns > 0) ? f.timestamp_ns : latest_record_ts_ns;
+            ev.trade.ts_ns = wall_now_ns();
             ev.trade.is_maker = true;
             (void)db_reporter->push(ev);
         }
@@ -119,7 +132,6 @@ BacktestStats run_one(const infra::Config& cfg, const std::vector<std::string>& 
 
     engine.set_on_record([&](const uint8_t* fb, std::size_t fb_sz, uint64_t ts_ns,
                              double bid, double ask, double bid_qty, double ask_qty) {
-        latest_record_ts_ns = ts_ns;
         // 1. Update simulator's view of the book (may emit fills).
         if (bid_qty <= 0.0) bid_qty = 0.001;
         if (ask_qty <= 0.0) ask_qty = 0.001;
@@ -156,7 +168,7 @@ BacktestStats run_one(const infra::Config& cfg, const std::vector<std::string>& 
             if (db_reporter) {
                 db::DbEvent ev{};
                 ev.kind = db::DbEventKind::PositionSnapshot;
-                ev.snap.ts_ns = ts_ns;
+                ev.snap.ts_ns = wall_now_ns();
                 ev.snap.inventory = pt.current_inventory();
                 ev.snap.avg_entry = pt.avg_entry();
                 ev.snap.realized = pt.realized_pnl();
