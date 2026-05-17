@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -251,6 +252,215 @@ func TestCalibrationRun(t *testing.T) {
 	}
 	if got["status"] != "started" || ran != 1 {
 		t.Fatalf("status=%v ran=%d", got, ran)
+	}
+}
+
+func TestAlertsCRUD(t *testing.T) {
+	dir := t.TempDir()
+	srv := newServer(&stubReader{}, 50*time.Millisecond, "")
+	srv.alerts = newAlertStore(filepath.Join(dir, "alerts.json"))
+	ts := httptest.NewServer(srv.routes())
+	defer ts.Close()
+
+	// Create via POST.
+	body := strings.NewReader(`{"name":"dd","type":"drawdown","threshold":3.0,"channel":"log","enabled":true}`)
+	resp, err := http.Post(ts.URL+"/api/alerts", "application/json", body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("create status = %d", resp.StatusCode)
+	}
+	var created AlertRule
+	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+	if created.ID == "" || created.Type != "drawdown" {
+		t.Fatalf("unexpected created rule: %+v", created)
+	}
+
+	// List.
+	r2, err := http.Get(ts.URL + "/api/alerts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r2.Body.Close()
+	var list []AlertRule
+	if err := json.NewDecoder(r2.Body).Decode(&list); err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 {
+		t.Fatalf("expected 1 rule, got %d", len(list))
+	}
+
+	// Delete.
+	req, _ := http.NewRequest("DELETE", ts.URL+"/api/alerts?id="+created.ID, nil)
+	r3, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r3.Body.Close()
+	if r3.StatusCode != http.StatusNoContent {
+		t.Fatalf("delete status = %d", r3.StatusCode)
+	}
+}
+
+func TestAlertEvaluatorFires(t *testing.T) {
+	store := newAlertStore(filepath.Join(t.TempDir(), "alerts.json"))
+	store.upsert(AlertRule{
+		ID: "r1", Name: "dd5", Type: "drawdown", Threshold: 5.0,
+		Channel: "log", Enabled: true,
+	})
+	var mu sync.Mutex
+	fires := 0
+	fire := func(_ AlertRule, _ Snapshot) {
+		mu.Lock()
+		fires++
+		mu.Unlock()
+	}
+	store.evaluate(Snapshot{CurrentDrawdownPct: 6.0}, fire)
+	store.evaluate(Snapshot{CurrentDrawdownPct: 6.0}, fire) // cooldown — should not fire
+	time.Sleep(20 * time.Millisecond)                       // let goroutines run
+	mu.Lock()
+	got := fires
+	mu.Unlock()
+	if got != 1 {
+		t.Fatalf("expected 1 fire (cooldown), got %d", got)
+	}
+}
+
+func TestAlertWebhookBestEffort(t *testing.T) {
+	// Webhook server that always 500s — the fire path must not panic or
+	// return errors, just log silently.
+	hits := make(chan struct{}, 4)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits <- struct{}{}
+		w.WriteHeader(500)
+	}))
+	defer upstream.Close()
+
+	rule := AlertRule{
+		ID: "r2", Name: "cb", Type: "circuit_breaker",
+		Channel: "webhook", WebhookURL: upstream.URL, Enabled: true,
+	}
+	defaultAlertFirer(rule, Snapshot{CircuitBreakerHalted: true})
+	select {
+	case <-hits:
+	case <-time.After(2 * time.Second):
+		t.Fatal("webhook never received")
+	}
+}
+
+func TestLogsHandler(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "spreadara.log")
+	content := strings.Repeat("line\n", 250) + "tail\n"
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	srv := newServer(&stubReader{}, 50*time.Millisecond, "")
+	srv.logPath = path
+	ts := httptest.NewServer(srv.routes())
+	defer ts.Close()
+	resp, err := http.Get(ts.URL + "/api/logs?lines=10")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var got LogsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got.TotalLines != 251 {
+		t.Fatalf("total = %d, want 251", got.TotalLines)
+	}
+	if len(got.Lines) != 10 || got.Lines[9] != "tail" {
+		t.Fatalf("unexpected tail lines: %+v", got.Lines)
+	}
+}
+
+func TestLogsMissing(t *testing.T) {
+	srv := newServer(&stubReader{}, 50*time.Millisecond, "")
+	srv.logPath = filepath.Join(t.TempDir(), "nope.log")
+	ts := httptest.NewServer(srv.routes())
+	defer ts.Close()
+	resp, err := http.Get(ts.URL + "/api/logs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	var got LogsResponse
+	_ = json.NewDecoder(resp.Body).Decode(&got)
+	if got.TotalLines != 0 || len(got.Lines) != 0 {
+		t.Fatalf("expected empty payload, got %+v", got)
+	}
+}
+
+func TestConfigRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	original := "[strategy]\ngamma = 0.10\n"
+	if err := os.WriteFile(path, []byte(original), 0644); err != nil {
+		t.Fatal(err)
+	}
+	srv := newServer(&stubReader{}, 50*time.Millisecond, "")
+	srv.configPath = path
+	ts := httptest.NewServer(srv.routes())
+	defer ts.Close()
+
+	// GET returns the file content as text.
+	r1, err := http.Get(ts.URL + "/api/config")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(r1.Body)
+	r1.Body.Close()
+	if string(body) != original {
+		t.Fatalf("GET body = %q, want %q", body, original)
+	}
+
+	// POST overwrites and creates .bak.
+	updated := "[strategy]\ngamma = 0.20\n"
+	r2, err := http.Post(ts.URL+"/api/config", "text/plain", strings.NewReader(updated))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r2.Body.Close()
+	if r2.StatusCode != 200 {
+		t.Fatalf("POST status = %d", r2.StatusCode)
+	}
+	got, _ := os.ReadFile(path)
+	if string(got) != updated {
+		t.Fatalf("file content after write = %q, want %q", got, updated)
+	}
+	bak, err := os.ReadFile(path + ".bak")
+	if err != nil {
+		t.Fatalf("expected .bak file: %v", err)
+	}
+	if string(bak) != original {
+		t.Fatalf(".bak content = %q, want %q", bak, original)
+	}
+}
+
+func TestConfigEmptyRejected(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	_ = os.WriteFile(path, []byte("x"), 0644)
+	srv := newServer(&stubReader{}, 50*time.Millisecond, "")
+	srv.configPath = path
+	ts := httptest.NewServer(srv.routes())
+	defer ts.Close()
+	resp, err := http.Post(ts.URL+"/api/config", "text/plain", strings.NewReader("   \n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", resp.StatusCode)
 	}
 }
 

@@ -116,6 +116,21 @@ type FundingRate struct {
 	FundingRate8h   float64 `json:"funding_rate_8h"`
 }
 
+type AlertRule struct {
+	ID         string  `json:"id"`
+	Name       string  `json:"name"`
+	Type       string  `json:"type"`
+	Threshold  float64 `json:"threshold"`
+	Channel    string  `json:"channel"`
+	WebhookURL string  `json:"webhook_url,omitempty"`
+	Enabled    bool    `json:"enabled"`
+}
+
+type LogsResponse struct {
+	Lines      []string `json:"lines"`
+	TotalLines int      `json:"total_lines"`
+}
+
 type CalibrationRow struct {
 	Gamma  float64 `json:"gamma"`
 	K      float64 `json:"k"`
@@ -489,6 +504,14 @@ type server struct {
 	fundingVal  FundingRate
 	fundingErr  error
 	fundingTTL  time.Duration
+
+	// v0.12 additions: alert rules persisted to JSON, log tailing, config
+	// read/write. All paths are env-overridable so the tests don't touch
+	// production files.
+	alerts     *alertStore
+	alertFire  alertFirer
+	logPath    string
+	configPath string
 }
 
 func newServer(r dbReader, wsInterval time.Duration, corsOrigin string) *server {
@@ -525,6 +548,10 @@ func newServer(r dbReader, wsInterval time.Duration, corsOrigin string) *server 
 		calibrationCsv:      envStrLocal("SPREADARA_CALIBRATION_CSV", "calibration_top10.csv"),
 		calibrationRunner:   defaultCalibrationRunner,
 		fundingTTL:          30 * time.Second,
+		alerts:              newAlertStore(envStrLocal("SPREADARA_ALERTS_PATH", "alerts.json")),
+		alertFire:           defaultAlertFirer,
+		logPath:             envStrLocal("SPREADARA_LOG_PATH", "logs/spreadara.log"),
+		configPath:          envStrLocal("SPREADARA_CONFIG_PATH", "config/config.toml"),
 	}
 }
 
@@ -686,6 +713,9 @@ func (s *server) handleSnapshot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.enrichSnapshot(&snap)
+	if s.alerts != nil && s.alertFire != nil {
+		s.alerts.evaluate(snap, s.alertFire)
+	}
 	writeJSON(w, snap)
 }
 
@@ -818,6 +848,130 @@ func (s *server) handleInventory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, pts)
+}
+
+func (s *server) handleAlerts(w http.ResponseWriter, r *http.Request) {
+	s.cors(w, r)
+	if r.Method == http.MethodOptions {
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, s.alerts.list())
+	case http.MethodPost:
+		var rule AlertRule
+		if err := json.NewDecoder(r.Body).Decode(&rule); err != nil {
+			http.Error(w, "bad json: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		if rule.Type == "" || rule.Channel == "" {
+			http.Error(w, "type and channel required", http.StatusBadRequest)
+			return
+		}
+		saved := s.alerts.upsert(rule)
+		writeJSON(w, saved)
+	case http.MethodDelete:
+		id := r.URL.Query().Get("id")
+		if id == "" {
+			http.Error(w, "id required", http.StatusBadRequest)
+			return
+		}
+		if !s.alerts.delete(id) {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// handleLogs tails the trading binary's log file. Reads the entire file
+// (the file is rotated by spdlog and stays bounded so this is cheap), then
+// returns the last `lines` rows.
+func (s *server) handleLogs(w http.ResponseWriter, r *http.Request) {
+	s.cors(w, r)
+	if r.Method == http.MethodOptions {
+		return
+	}
+	lines := parseLimitStr(r.URL.Query().Get("lines"), 200, 1000)
+	b, err := os.ReadFile(s.logPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			writeJSON(w, LogsResponse{Lines: []string{}, TotalLines: 0})
+			return
+		}
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	all := strings.Split(strings.TrimRight(string(b), "\n"), "\n")
+	if len(all) == 1 && all[0] == "" {
+		writeJSON(w, LogsResponse{Lines: []string{}, TotalLines: 0})
+		return
+	}
+	total := len(all)
+	if lines < total {
+		all = all[total-lines:]
+	}
+	writeJSON(w, LogsResponse{Lines: all, TotalLines: total})
+}
+
+// parseLimit overload-by-string: original parseLimit takes the request and
+// reads "limit". This variant takes a raw string so /api/logs can read
+// "lines" without a second helper.
+func parseLimitStr(q string, def, cap int) int {
+	if q == "" {
+		return def
+	}
+	n, err := strconv.Atoi(q)
+	if err != nil || n <= 0 {
+		return def
+	}
+	if n > cap {
+		return cap
+	}
+	return n
+}
+
+func (s *server) handleConfig(w http.ResponseWriter, r *http.Request) {
+	s.cors(w, r)
+	if r.Method == http.MethodOptions {
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		b, err := os.ReadFile(s.configPath)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		_, _ = w.Write(b)
+	case http.MethodPost:
+		body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if len(strings.TrimSpace(string(body))) == 0 {
+			http.Error(w, "empty body", http.StatusBadRequest)
+			return
+		}
+		// Backup before overwriting. If backup fails the write still proceeds
+		// but we log the issue — operators can recover from git history.
+		if cur, err := os.ReadFile(s.configPath); err == nil {
+			if werr := os.WriteFile(s.configPath+".bak", cur, 0644); werr != nil {
+				log.Printf("config_backup_failed: %v", werr)
+			}
+		}
+		if err := os.WriteFile(s.configPath, body, 0644); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, map[string]string{"status": "saved"})
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
 }
 
 func (s *server) handleOrders(w http.ResponseWriter, r *http.Request) {
@@ -1052,6 +1206,9 @@ func (s *server) handleWS(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			s.enrichSnapshot(&snap)
+			if s.alerts != nil && s.alertFire != nil {
+				s.alerts.evaluate(snap, s.alertFire)
+			}
 			payload, err := json.Marshal(snap)
 			if err != nil {
 				continue
@@ -1173,6 +1330,9 @@ func (s *server) routes() http.Handler {
 	mux.HandleFunc("/api/funding-rate", s.handleFundingRate)
 	mux.HandleFunc("/api/calibration", s.handleCalibration)
 	mux.HandleFunc("/api/calibration/run", s.handleCalibrationRun)
+	mux.HandleFunc("/api/alerts", s.handleAlerts)
+	mux.HandleFunc("/api/logs", s.handleLogs)
+	mux.HandleFunc("/api/config", s.handleConfig)
 	mux.HandleFunc("/api/v5/status", s.handleStatus)
 	mux.HandleFunc("/ws", s.handleWS)
 	// TODO(phase 7): auth.

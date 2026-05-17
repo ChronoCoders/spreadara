@@ -273,6 +273,26 @@ button {
   background: var(--bg-surface);
 }
 
+.input {
+  background: var(--bg-base);
+  border: 1px solid var(--bg-border);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 5px 8px;
+  border-radius: 2px;
+  outline: none;
+}
+
+.input:focus {
+  border-color: var(--amber);
+}
+
+.input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 /* ------- Topbar ------- */
 .topbar {
   height: 48px;
