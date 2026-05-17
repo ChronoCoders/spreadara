@@ -243,6 +243,15 @@ bool OkxRestClient::process_status(long http_code, const std::string& body,
     // failed" on order placement). Pull that out so the log shows the
     // actual cause, not just the generic envelope.
     const auto pr = parse_data_first(body);
+    // WHY: prefer per-item sCode over the top-level code when both indicate
+    // failure. The per-item code identifies the specific exchange-side error
+    // (e.g. 51400 = "order does not exist") that the caller's idempotent
+    // handler keys on. Without this, CancelAck.binance_code carries the
+    // generic top-level "1" and order_manager's cancel-idempotent path
+    // never fires, leaving slots stuck after silent fills.
+    if (pr.s_code != 0) {
+        exchange_code_out = pr.s_code;
+    }
     spdlog::warn(
         "okx_rest_fail stage=app exchange_code={} msg=\"{}\" item_code={} item_msg=\"{}\" endpoint={}",
         code_int, msg, pr.s_code, pr.s_msg, endpoint);
