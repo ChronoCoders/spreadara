@@ -109,6 +109,7 @@ Config load_config(const std::string& path) {
     c.risk.max_daily_loss = tbl["risk"]["max_daily_loss"].value_or(500.0);
     c.risk.max_open_orders = tbl["risk"]["max_open_orders"].value_or(10);
     c.risk.max_drawdown_pct = tbl["risk"]["max_drawdown_pct"].value_or(5.0);
+    c.risk.drawdown_min_equity = tbl["risk"]["drawdown_min_equity"].value_or(100.0);
     c.risk.max_unhedged_seconds = tbl["risk"]["max_unhedged_seconds"].value_or(30);
     c.risk.max_consecutive_rejections = tbl["risk"]["max_consecutive_rejections"].value_or(5);
     c.risk.circuit_breaker_poll_ms = tbl["risk"]["circuit_breaker_poll_ms"].value_or(100);

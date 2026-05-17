@@ -61,6 +61,7 @@ type Snapshot struct {
 	FillCount60s int     `json:"fill_count_60s"`
 	MakerRatio   float64 `json:"maker_ratio"`
 	FillsPer10s  float64 `json:"fills_per_10s"`
+	AvgSpreadBps float64 `json:"avg_spread_bps"`
 }
 
 type Trade struct {
@@ -111,6 +112,14 @@ type haltedReader interface {
 // it; the test stubReader does not, so handlers fall back to zeros.
 type fillStatsReader interface {
 	fillStats() (int, int, float64, float64, error)
+}
+
+// spreadStatsReader is an optional capability for the 60s rolling average
+// spread, computed from position_snapshots (the trading binary writes a
+// per-snapshot spread_bps at ~1 Hz). Separate from fillStatsReader because
+// the source table is different and we want stubs to opt-in independently.
+type spreadStatsReader interface {
+	avgSpreadBps60s() (float64, error)
 }
 
 // statusReader is an optional capability for /api/v5/status. sqlReader
@@ -207,6 +216,24 @@ func (r *sqlReader) fillStats() (int, int, float64, float64, error) {
 		ratio = float64(makers) / float64(total)
 	}
 	return f10, f60, ratio, float64(f10), nil
+}
+
+// avgSpreadBps60s returns the mean of position_snapshots.spread_bps over the
+// last 60s, ignoring NULLs and rows where spread_bps <= 0 (those represent
+// "book not yet ready" snapshots, not real zero spreads). Returns 0 if no
+// usable rows in the window.
+func (r *sqlReader) avgSpreadBps60s() (float64, error) {
+	cutoff := time.Now().Add(-60*time.Second).UnixNano()
+	var avg sql.NullFloat64
+	err := r.db.QueryRow(
+		`SELECT AVG(spread_bps) FROM position_snapshots
+		 WHERE ts_ns >= $1 AND spread_bps IS NOT NULL AND spread_bps > 0`,
+		cutoff,
+	).Scan(&avg)
+	if err != nil {
+		return 0, err
+	}
+	return avg.Float64, nil
 }
 
 func (r *sqlReader) recentTrades(limit int) ([]Trade, error) {
@@ -400,6 +427,11 @@ func (s *server) enrichSnapshot(snap *Snapshot) {
 			snap.FillCount60s = f60
 			snap.MakerRatio = ratio
 			snap.FillsPer10s = fp10
+		}
+	}
+	if sr, ok := s.r.(spreadStatsReader); ok {
+		if avg, err := sr.avgSpreadBps60s(); err == nil {
+			snap.AvgSpreadBps = avg
 		}
 	}
 }

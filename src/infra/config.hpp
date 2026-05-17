@@ -123,6 +123,12 @@ struct Config {
         double max_daily_loss;
         int max_open_orders;
         double max_drawdown_pct;
+        // WHY: percent-drawdown is meaningless when peak equity is tiny — a
+        // $0.20 dip on a $0.45 peak reads as 46% but is just intraday noise
+        // on a low-volume session. Gate the percent check on peak_equity_
+        // exceeding this floor so the CB doesn't false-alarm at session
+        // start.
+        double drawdown_min_equity;
         int max_unhedged_seconds;
         int max_consecutive_rejections;
         int circuit_breaker_poll_ms;

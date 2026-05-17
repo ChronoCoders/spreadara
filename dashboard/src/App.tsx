@@ -30,7 +30,8 @@ interface ExtSnapshot extends Snapshot {
   current_drawdown?: number;
   max_drawdown_pct?: number;
   circuit_breaker?: string;
-  fill_count?: number;
+  fill_count_10s?: number;
+  fill_count_60s?: number;
   maker_ratio?: number;
   avg_spread_bps?: number;
   fills_per_10s?: number;
@@ -38,6 +39,9 @@ interface ExtSnapshot extends Snapshot {
   gamma?: number;
   k?: number;
   t?: number;
+  lat_p50_us?: number;
+  lat_p95_us?: number;
+  lat_p99_us?: number;
 }
 
 const priceFmt = new Intl.NumberFormat('en-US', {
@@ -61,6 +65,10 @@ const pctFmt = new Intl.NumberFormat('en-US', {
   minimumFractionDigits: 1,
   maximumFractionDigits: 1,
 });
+const bpsFmt = new Intl.NumberFormat('en-US', {
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 3,
+});
 
 function formatPrice(n: number): string {
   if (!Number.isFinite(n)) return '—';
@@ -81,6 +89,12 @@ function signedMoney(n: number): string {
 function plainMoney(n: number): string {
   if (!Number.isFinite(n)) return '—';
   return `$${moneyFmt.format(n)}`;
+}
+
+function fmtLatUs(us: number | undefined): string {
+  if (us === undefined || !Number.isFinite(us) || us <= 0) return '—';
+  if (us < 1000) return `${us.toFixed(0)} µs`;
+  return `${(us / 1000).toFixed(2)} ms`;
 }
 
 export default function App() {
@@ -151,7 +165,7 @@ export default function App() {
   const openOrders = s?.open_orders ?? 0;
   const maxOpenOrders =
     s?.max_open_orders && s.max_open_orders > 0 ? s.max_open_orders : 10;
-  const fillCount = s?.fill_count ?? trades.length;
+  const fillCount = s?.fill_count_60s ?? 0;
   const makerRatio = s?.maker_ratio;
   const avgSpreadBps = s?.avg_spread_bps;
   const fillsPer10s = s?.fills_per_10s;
@@ -159,6 +173,9 @@ export default function App() {
   const gamma = s?.gamma;
   const kParam = s?.k;
   const tHorizon = s?.t;
+  const latP50 = s?.lat_p50_us;
+  const latP95 = s?.lat_p95_us;
+  const latP99 = s?.lat_p99_us;
 
   const invTone = signTone(inventory);
 
@@ -172,7 +189,7 @@ export default function App() {
           <MetricCard label="Mid">
             <div className="metric-value">{Number.isFinite(mid) ? formatPrice(mid) : '—'}</div>
             <div className="metric-sub">
-              SPREAD <span className="mono">{spreadBps !== undefined ? pctFmt.format(spreadBps) : '—'}</span> bps
+              SPREAD <span className="mono">{spreadBps !== undefined ? bpsFmt.format(spreadBps) : '—'}</span> bps
             </div>
           </MetricCard>
 
@@ -250,7 +267,7 @@ export default function App() {
             </div>
           </MetricCard>
 
-          <MetricCard label="Fill Rate">
+          <MetricCard label="Fills (60s)">
             <div className="metric-value">{fillCount}</div>
             <div className="metric-sub-rows">
               <div className="sub-row">
@@ -262,7 +279,7 @@ export default function App() {
               <div className="sub-row">
                 <span>Avg Spread</span>
                 <span className="val">
-                  {avgSpreadBps !== undefined ? `${pctFmt.format(avgSpreadBps)} bps` : '—'}
+                  {avgSpreadBps !== undefined ? `${bpsFmt.format(avgSpreadBps)} bps` : '—'}
                 </span>
               </div>
               <div className="sub-row">
@@ -273,19 +290,21 @@ export default function App() {
           </MetricCard>
 
           <MetricCard label="Latency">
-            <div className="metric-value muted">— ms</div>
+            <div className={`metric-value ${latP95 === undefined ? 'muted' : ''}`}>
+              {fmtLatUs(latP95)}
+            </div>
             <div className="metric-sub-rows">
               <div className="sub-row">
                 <span>P50</span>
-                <span className="val dim">—</span>
+                <span className={`val ${latP50 === undefined ? 'dim' : ''}`}>{fmtLatUs(latP50)}</span>
               </div>
               <div className="sub-row">
                 <span>P95</span>
-                <span className="val dim">—</span>
+                <span className={`val ${latP95 === undefined ? 'dim' : ''}`}>{fmtLatUs(latP95)}</span>
               </div>
               <div className="sub-row">
                 <span>P99</span>
-                <span className="val dim">—</span>
+                <span className={`val ${latP99 === undefined ? 'dim' : ''}`}>{fmtLatUs(latP99)}</span>
               </div>
               <div className="sub-row">
                 <span>WS Lag</span>

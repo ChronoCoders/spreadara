@@ -54,9 +54,13 @@ static uint64_t now_ns_wall() {
 
 void CircuitBreaker::do_tick(std::chrono::steady_clock::time_point now) {
     // Drawdown — latch on cross, clear when condition recedes.
+    // WHY: gate the percent check on peak_equity_ > drawdown_min_equity. At
+    // low absolute peaks a normal intraday dip computes as a huge percentage
+    // (a $0.20 dip on $0.45 peak = 46% "drawdown") and false-alarms. The
+    // floor is meant for demo/low-volume sessions; production peaks dwarf it.
     const double eq = pt_.equity();
     if (eq > peak_equity_) peak_equity_ = eq;
-    if (peak_equity_ > 0.0) {
+    if (peak_equity_ > cfg_.risk.drawdown_min_equity) {
         const double dd_pct = (peak_equity_ - eq) / peak_equity_ * 100.0;
         if (dd_pct > cfg_.risk.max_drawdown_pct) {
             if (!dd_active_) {
