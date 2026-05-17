@@ -67,6 +67,7 @@ export interface FundingRate {
 }
 
 export interface BacktestRow {
+  run_ts: string;
   total_pnl: number;
   sharpe_ratio: number;
   max_drawdown_pct: number;

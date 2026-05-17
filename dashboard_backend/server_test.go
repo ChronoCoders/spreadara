@@ -467,8 +467,9 @@ func TestConfigEmptyRejected(t *testing.T) {
 func TestBacktestCSVParse(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "backtest_results.csv")
-	body := "total_pnl,sharpe_ratio,max_drawdown_pct,fill_count,maker_ratio,avg_spread_captured_bps,initial_capital,final_equity\n" +
-		"-6.0845,-264.8155,0.0848,64,1.0000,0.0000,10000.0,9993.92\n"
+	body := "run_ts,total_pnl,sharpe_ratio,max_drawdown_pct,fill_count,maker_ratio,avg_spread_captured_bps,initial_capital,final_equity\n" +
+		"2026-05-16T04:16:40Z,-6.0845,-264.8155,0.0848,64,1.0000,0.0000,10000.0,9993.92\n" +
+		"2026-05-17T08:00:00Z,12.34,1.500,0.0200,30,0.8000,0.0500,10000.0,10012.34\n"
 	if err := os.WriteFile(path, []byte(body), 0644); err != nil {
 		t.Fatal(err)
 	}
@@ -485,8 +486,12 @@ func TestBacktestCSVParse(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 1 || got[0].FillCount != 64 || got[0].FinalEquity != 9993.92 {
-		t.Fatalf("unexpected rows: %+v", got)
+	// Reversed: newest first.
+	if len(got) != 2 || got[0].RunTs != "2026-05-17T08:00:00Z" || got[0].FillCount != 30 {
+		t.Fatalf("unexpected newest row: %+v", got)
+	}
+	if got[1].FinalEquity != 9993.92 {
+		t.Fatalf("unexpected older row: %+v", got[1])
 	}
 }
 

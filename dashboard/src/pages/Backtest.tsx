@@ -70,6 +70,7 @@ export default function Backtest() {
             <table className="table">
               <thead>
                 <tr>
+                  <th>Run (UTC)</th>
                   <th className="col-qty">Total P&amp;L</th>
                   <th className="col-qty">Sharpe</th>
                   <th className="col-qty">Max DD</th>
@@ -83,11 +84,12 @@ export default function Backtest() {
               <tbody>
                 {rows.length === 0 ? (
                   <tr className="empty-row">
-                    <td colSpan={8}>no backtest results yet — click Run Backtest</td>
+                    <td colSpan={9}>no backtest results yet — click Run Backtest</td>
                   </tr>
                 ) : (
                   rows.map((r, i) => (
                     <tr key={i}>
+                      <td style={{ color: 'var(--text-secondary)' }}>{r.run_ts || '—'}</td>
                       <td className="col-qty" style={{ color: r.total_pnl > 0 ? 'var(--green)' : r.total_pnl < 0 ? 'var(--red)' : undefined }}>
                         {signedMoney(r.total_pnl)}
                       </td>
@@ -105,10 +107,6 @@ export default function Backtest() {
             </table>
           </div>
         </div>
-      </div>
-
-      <div style={{ padding: '8px 16px', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', fontSize: 11, borderTop: '1px solid var(--bg-border)' }}>
-        Note: the C++ writer currently overwrites <code>backtest_results.csv</code> per run, so only the most recent run appears.
       </div>
     </div>
   );

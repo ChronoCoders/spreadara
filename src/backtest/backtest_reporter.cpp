@@ -1,8 +1,11 @@
 #include "backtest/backtest_reporter.hpp"
 
+#include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <ctime>
 #include <fstream>
+#include <string>
 
 namespace spreadara::backtest {
 
@@ -75,13 +78,43 @@ BacktestStats BacktestReporter::finalize() const {
 }
 
 bool BacktestReporter::write_csv(const std::string& path, const BacktestStats& s) const {
-    std::ofstream out(path, std::ios::trunc);
-    if (!out.is_open()) return false;
-    out << "total_pnl,sharpe_ratio,max_drawdown_pct,fill_count,maker_ratio,"
-           "avg_spread_captured_bps,initial_capital,final_equity\n";
+    // WHY: append per-run rows with a UTC run timestamp so the dashboard can
+    // show full backtest history. If an existing file lacks the run_ts
+    // header (older single-row format), truncate and start fresh — the lone
+    // row is summary-only with no timestamp anyway, so it's safe to drop.
+    static constexpr const char* kHeader =
+        "run_ts,total_pnl,sharpe_ratio,max_drawdown_pct,fill_count,maker_ratio,"
+        "avg_spread_captured_bps,initial_capital,final_equity\n";
+    bool needs_header = true;
+    {
+        std::ifstream in(path);
+        if (in.is_open()) {
+            std::string first;
+            if (std::getline(in, first)) {
+                first.push_back('\n');
+                if (first == kHeader) needs_header = false;
+            }
+        }
+    }
+    std::ofstream out;
+    if (needs_header) {
+        out.open(path, std::ios::trunc);
+        if (!out.is_open()) return false;
+        out << kHeader;
+    } else {
+        out.open(path, std::ios::app);
+        if (!out.is_open()) return false;
+    }
+    const auto now = std::chrono::system_clock::now();
+    const std::time_t tt = std::chrono::system_clock::to_time_t(now);
+    std::tm tm_buf{};
+    gmtime_r(&tt, &tm_buf);
+    char ts[32];
+    std::strftime(ts, sizeof(ts), "%Y-%m-%dT%H:%M:%SZ", &tm_buf);
     char buf[512];
     std::snprintf(buf, sizeof(buf),
-                  "%.8f,%.6f,%.6f,%zu,%.6f,%.6f,%.6f,%.8f\n",
+                  "%s,%.8f,%.6f,%.6f,%zu,%.6f,%.6f,%.6f,%.8f\n",
+                  ts,
                   s.total_pnl, s.sharpe_ratio, s.max_drawdown_pct, s.fill_count,
                   s.maker_ratio, s.avg_spread_captured_bps,
                   s.initial_capital, s.final_equity);

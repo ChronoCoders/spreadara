@@ -132,6 +132,7 @@ type LogsResponse struct {
 }
 
 type BacktestRow struct {
+	RunTs                 string  `json:"run_ts"`
 	TotalPnl              float64 `json:"total_pnl"`
 	SharpeRatio           float64 `json:"sharpe_ratio"`
 	MaxDrawdownPct        float64 `json:"max_drawdown_pct"`
@@ -617,6 +618,7 @@ func readBacktestCSV(path string) ([]BacktestRow, error) {
 		if len(row) == 0 {
 			continue
 		}
+		runTs := get(row, "run_ts", "timestamp", "ts")
 		pnl, _ := strconv.ParseFloat(get(row, "total_pnl", "pnl"), 64)
 		sharpe, _ := strconv.ParseFloat(get(row, "sharpe_ratio", "sharpe"), 64)
 		dd, _ := strconv.ParseFloat(get(row, "max_drawdown_pct", "max_dd", "maxdd"), 64)
@@ -626,10 +628,16 @@ func readBacktestCSV(path string) ([]BacktestRow, error) {
 		init, _ := strconv.ParseFloat(get(row, "initial_capital"), 64)
 		final, _ := strconv.ParseFloat(get(row, "final_equity"), 64)
 		out = append(out, BacktestRow{
+			RunTs: runTs,
 			TotalPnl: pnl, SharpeRatio: sharpe, MaxDrawdownPct: dd,
 			FillCount: fills, MakerRatio: maker, AvgSpreadCapturedBps: spread,
 			InitialCapital: init, FinalEquity: final,
 		})
+	}
+	// Reverse so newest is first — the C++ writer appends, so on disk the
+	// rows are oldest-first.
+	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
+		out[i], out[j] = out[j], out[i]
 	}
 	return out, nil
 }
