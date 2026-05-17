@@ -91,8 +91,9 @@ export function Sidebar() {
 
       <aside className={`sidebar ${open ? 'sidebar-open' : ''}`}>
         <div className="sidebar-brand">
-          <span className="brand-primary">SPREAD</span>
-          <span className="brand-accent">ara</span>
+          <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '14px', fontWeight: 700, letterSpacing: '0.05em' }}>
+            SPREAD<span style={{ color: '#f59e0b' }}>ARA</span>
+          </span>
         </div>
 
         <nav className="sidebar-nav">
