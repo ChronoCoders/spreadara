@@ -246,7 +246,7 @@ bool OkxRestClient::process_status(long http_code, const std::string& body,
     // WHY: prefer per-item sCode over the top-level code when both indicate
     // failure. The per-item code identifies the specific exchange-side error
     // (e.g. 51400 = "order does not exist") that the caller's idempotent
-    // handler keys on. Without this, CancelAck.binance_code carries the
+    // handler keys on. Without this, CancelAck.exchange_code carries the
     // generic top-level "1" and order_manager's cancel-idempotent path
     // never fires, leaving slots stuck after silent fills.
     if (pr.s_code != 0) {
@@ -300,11 +300,11 @@ OrderAck OkxRestClient::place_order(const std::string& side, double qty_btc, dou
 
     auto r = signed_request(h_write_, "POST", "/api/v5/trade/order", body);
     a.http_code = static_cast<int>(r.http_code);
-    if (!process_status(r.http_code, r.body, "/api/v5/trade/order", a.binance_code)) return a;
+    if (!process_status(r.http_code, r.body, "/api/v5/trade/order", a.exchange_code)) return a;
 
     const auto pr = parse_data_first(r.body);
     if (!pr.ok) {
-        a.binance_code = pr.s_code;
+        a.exchange_code = pr.s_code;
         spdlog::warn("okx_rest_fail stage=order_reject exchange_code={} msg=\"{}\" endpoint=/api/v5/trade/order",
                      pr.s_code, pr.s_msg);
         return a;
@@ -347,11 +347,11 @@ OrderAck OkxRestClient::place_market_order(const std::string& side, double qty_b
 
     auto r = signed_request(h_write_, "POST", "/api/v5/trade/order", body);
     a.http_code = static_cast<int>(r.http_code);
-    if (!process_status(r.http_code, r.body, "/api/v5/trade/order", a.binance_code)) return a;
+    if (!process_status(r.http_code, r.body, "/api/v5/trade/order", a.exchange_code)) return a;
 
     const auto pr = parse_data_first(r.body);
     if (!pr.ok) {
-        a.binance_code = pr.s_code;
+        a.exchange_code = pr.s_code;
         spdlog::warn("okx_rest_fail stage=order_reject exchange_code={} msg=\"{}\" endpoint=/api/v5/trade/order(MARKET)",
                      pr.s_code, pr.s_msg);
         return a;
@@ -392,11 +392,11 @@ CancelAck OkxRestClient::cancel_order(const std::string& client_order_id,
 
     auto r = signed_request(h_write_, "POST", "/api/v5/trade/cancel-order", body);
     a.http_code = static_cast<int>(r.http_code);
-    if (!process_status(r.http_code, r.body, "/api/v5/trade/cancel-order", a.binance_code)) return a;
+    if (!process_status(r.http_code, r.body, "/api/v5/trade/cancel-order", a.exchange_code)) return a;
 
     const auto pr = parse_data_first(r.body);
     if (!pr.ok) {
-        a.binance_code = pr.s_code;
+        a.exchange_code = pr.s_code;
         spdlog::warn("okx_rest_fail stage=cancel_reject exchange_code={} msg=\"{}\" endpoint=/api/v5/trade/cancel-order",
                      pr.s_code, pr.s_msg);
         return a;
@@ -439,7 +439,7 @@ AmendAck OkxRestClient::amend_order(int64_t exchange_order_id, double new_price,
 
     auto r = signed_request(h_write_, "POST", "/api/v5/trade/amend-order", body);
     a.http_code = static_cast<int>(r.http_code);
-    if (process_status(r.http_code, r.body, "/api/v5/trade/amend-order", a.binance_code)) {
+    if (process_status(r.http_code, r.body, "/api/v5/trade/amend-order", a.exchange_code)) {
         const auto pr = parse_data_first(r.body);
         if (pr.ok) {
             a.ok = true;
@@ -450,7 +450,7 @@ AmendAck OkxRestClient::amend_order(int64_t exchange_order_id, double new_price,
         }
         spdlog::warn("okx_rest_fail stage=amend_reject exchange_code={} msg=\"{}\" endpoint=/api/v5/trade/amend-order",
                      pr.s_code, pr.s_msg);
-        a.binance_code = pr.s_code;
+        a.exchange_code = pr.s_code;
         // Fall through to cancel+place fallback below.
     }
 

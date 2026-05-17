@@ -4,7 +4,7 @@
 #include <thread>
 
 #include "infra/config.hpp"
-#include "market_data/binance_ws_client.hpp"
+#include "market_data/ws_types.hpp"
 #include "market_data/orderbook.hpp"
 #include "market_data/volatility.hpp"
 #include "strategy/signal_aggregator.hpp"

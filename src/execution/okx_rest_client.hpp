@@ -18,7 +18,7 @@
 #include <cstdint>
 #include <string>
 
-#include "execution/rest_client.hpp"  // IRestClient + ack POD types
+#include "execution/i_rest_client.hpp"  // IRestClient + ack POD types
 #include "infra/config.hpp"
 
 typedef void CURL;

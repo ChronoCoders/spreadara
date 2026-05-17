@@ -97,7 +97,7 @@ set(LIB_SOURCES
     src/infra/cpu_affinity.cpp
     src/infra/rdtsc.cpp
     src/market_data/orderbook.cpp
-    src/market_data/binance_ws_client.cpp
+    src/market_data/depth_snapshot.cpp
     src/market_data/okx_ws_client.cpp
     src/market_data/tick_processor.cpp
     src/strategy/inventory_manager.cpp
@@ -107,7 +107,7 @@ set(LIB_SOURCES
     src/risk/position_tracker.cpp
     src/risk/risk_manager.cpp
     src/risk/circuit_breaker.cpp
-    src/execution/rest_client.cpp
+    src/execution/credentials.cpp
     src/execution/okx_rest_client.cpp
     src/execution/order_manager.cpp
     src/execution/fix_client.cpp

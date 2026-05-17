@@ -9,7 +9,7 @@
 #include <string>
 #include <thread>
 
-#include "execution/rest_client.hpp"
+#include "execution/i_rest_client.hpp"
 #include "infra/config.hpp"
 #include "risk/position_tracker.hpp"
 #include "strategy/signal_aggregator.hpp"  // QuoteRing

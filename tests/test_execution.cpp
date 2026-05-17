@@ -5,10 +5,13 @@
 #include <thread>
 
 #include <gtest/gtest.h>
+#include <openssl/hmac.h>
+#include <openssl/sha.h>
 
 #include "db/pg_reporter.hpp"
+#include "execution/i_rest_client.hpp"
 #include "execution/order_manager.hpp"
-#include "execution/rest_client.hpp"
+#include "execution/simulated_rest_client.hpp"
 #include "infra/config.hpp"
 #include "risk/circuit_breaker.hpp"
 #include "risk/position_tracker.hpp"
@@ -47,7 +50,7 @@ infra::Config make_cfg() {
     c.reporter.pg_pool_min = 0;
     c.transport.db_ring_capacity = 4096;
     c.market_data.symbol = "BTCUSDT";
-    c.execution.rest_base_url = "https://fapi.binance.com";
+    c.execution.rest_base_url = "https://example.invalid";
     c.execution.recv_window_ms = 5000;
     c.execution.ack_timeout_ms = 2000;
     c.execution.reconcile_interval_seconds = 300;
@@ -72,9 +75,29 @@ infra::Config make_cfg() {
     return c;
 }
 
+// WHY: known-vector HMAC-SHA256 hex check. Validates the OpenSSL pipeline the
+// REST signers depend on without coupling the test to a specific exchange
+// adapter implementation.
+std::string hmac_sha256_hex(const std::string& secret, const std::string& msg) {
+    unsigned char out[SHA256_DIGEST_LENGTH];
+    unsigned int out_len = 0;
+    HMAC(EVP_sha256(),
+         secret.data(), static_cast<int>(secret.size()),
+         reinterpret_cast<const unsigned char*>(msg.data()), msg.size(),
+         out, &out_len);
+    static const char hex[] = "0123456789abcdef";
+    std::string s;
+    s.resize(out_len * 2);
+    for (unsigned int i = 0; i < out_len; ++i) {
+        s[2 * i]     = hex[(out[i] >> 4) & 0xF];
+        s[2 * i + 1] = hex[out[i] & 0xF];
+    }
+    return s;
+}
+
 }  // namespace
 
-TEST(Hmac, BinanceKnownVector) {
+TEST(Hmac, KnownVector) {
     const std::string secret =
         "NhqPtmdSJYdKjVHjA7PZj4Mge3R5YNiP1e3UZjInClVN65XAbvqqM6A7H5fATj0j";
     const std::string qs =
@@ -82,7 +105,7 @@ TEST(Hmac, BinanceKnownVector) {
         "&recvWindow=5000&timestamp=1499827319559";
     const std::string expected =
         "c8db56825ae71d6d79447849e617115f4a920fa2acdcab2b053c4b2838bd6b71";
-    EXPECT_EQ(execution::RestClient::hmac_sha256_hex(secret, qs), expected);
+    EXPECT_EQ(hmac_sha256_hex(secret, qs), expected);
 }
 
 TEST(OrderState, ValidAndInvalidTransitions) {
@@ -108,8 +131,7 @@ TEST(OrderManager, ForTestingStateTransition) {
     risk::RiskManager rm(cfg, pt);
     risk::RiskEventRing ring;
     risk::CircuitBreaker cb(cfg, pt, rm, &ring);
-    execution::Credentials creds{"k", "s", ""};
-    execution::RestClient rest(cfg, creds, &cb);
+    execution::SimulatedRestClient rest(cfg, cfg.market_data.symbol);
     execution::OrderManager om(cfg, rest, pt, rm, cb, nullptr);
     execution::OrderManagerTestPeer peer(om);
 
@@ -128,8 +150,7 @@ TEST(OrderManager, ReconcileDivergenceTriggersCb) {
     risk::RiskManager rm(cfg, pt);
     risk::RiskEventRing ring;
     risk::CircuitBreaker cb(cfg, pt, rm, &ring);
-    execution::Credentials creds{"k", "s", ""};
-    execution::RestClient rest(cfg, creds, &cb);
+    execution::SimulatedRestClient rest(cfg, cfg.market_data.symbol);
     execution::OrderManager om(cfg, rest, pt, rm, cb, nullptr);
 
     // Drive local inventory to +0.10 via apply_fill (BUY 0.10 @ 100).
@@ -157,29 +178,13 @@ TEST(OrderManager, ReconcileDivergenceTriggersCb) {
     EXPECT_TRUE(cb.halted());
 }
 
-TEST(RestClient, Geoblock451HaltsCb) {
-    auto cfg = make_cfg();
-    risk::PositionTracker pt;
-    risk::RiskManager rm(cfg, pt);
-    risk::RiskEventRing ring;
-    risk::CircuitBreaker cb(cfg, pt, rm, &ring);
-    execution::Credentials creds{"k", "s", ""};
-    execution::RestClient rest(cfg, creds, &cb);
-
-    EXPECT_FALSE(cb.halted());
-    bool ok = rest.handle_response_for_test(451, "{}", "/fapi/v1/order");
-    EXPECT_FALSE(ok);
-    EXPECT_TRUE(cb.halted());
-}
-
 TEST(OrderManager, ShutdownCancelsActive) {
     auto cfg = make_cfg();
     risk::PositionTracker pt;
     risk::RiskManager rm(cfg, pt);
     risk::RiskEventRing ring;
     risk::CircuitBreaker cb(cfg, pt, rm, &ring);
-    execution::Credentials creds{"k", "s", ""};
-    execution::RestClient rest(cfg, creds, &cb);
+    execution::SimulatedRestClient rest(cfg, cfg.market_data.symbol);
     execution::OrderManager om(cfg, rest, pt, rm, cb, nullptr);
     execution::OrderManagerTestPeer peer(om);
 
@@ -193,12 +198,10 @@ TEST(OrderManager, ShutdownCancelsActive) {
     s.exchange_order_id = 123;
     s.client_order_id = "cid-tst";
 
-    // First call: cancel_slot will fail because no live exchange; verify
-    // shutdown_cancel_all is safely callable.
+    // SimulatedRestClient succeeds, so shutdown drives the slot to CANCELED.
     om.shutdown_cancel_all();
-    // Now exercise the success path by force-transitioning to CANCELED.
-    ASSERT_TRUE(peer.transition(0, execution::OrderState::CANCELED));
-    s.active = false;
+    EXPECT_EQ(peer.slot(0).state, execution::OrderState::CANCELED);
+    // Idempotent: second call is a no-op (slot already inactive + CANCELED).
     om.shutdown_cancel_all();
     EXPECT_EQ(peer.slot(0).state, execution::OrderState::CANCELED);
 }
@@ -214,10 +217,6 @@ TEST(RestClient, AmendHalfStateReportsCritical) {
     db::DbEventRing db_ring;
     db::PgReporter reporter(cfg, db_ring, "");
     reporter.start();
-
-    execution::Credentials creds{"k", "s", ""};
-    execution::RestClient rest(cfg, creds, &cb);
-    rest.set_reporter(&reporter);
 
     // Synthesize a SystemEvent push directly through the same handler the
     // amend half-state path uses. handle_response_for_test exercises the

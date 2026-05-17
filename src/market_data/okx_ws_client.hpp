@@ -23,7 +23,7 @@
 #include <boost/asio/ssl/context.hpp>
 
 #include "infra/config.hpp"
-#include "market_data/binance_ws_client.hpp"  // EventRing, StreamKind, PriceLevel
+#include "market_data/ws_types.hpp"  // EventRing, PriceLevel
 
 namespace spreadara::market_data::okx {
 
