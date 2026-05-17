@@ -7,6 +7,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"crypto/sha1"
 	"database/sql"
 	"encoding/base64"
@@ -112,6 +113,14 @@ type fillStatsReader interface {
 	fillStats() (int, int, float64, float64, error)
 }
 
+// statusReader is an optional capability for /api/v5/status. sqlReader
+// implements it via lastSnapshotTs + dbPing; test stubs can implement it
+// with deliberate-failure variants to exercise the 500 paths.
+type statusReader interface {
+	lastSnapshotTs() (int64, error)
+	dbPing(ctx context.Context) error
+}
+
 type sqlReader struct{ db *sql.DB }
 
 func (r *sqlReader) latestSnapshot() (Snapshot, error) {
@@ -145,6 +154,15 @@ func (r *sqlReader) latestSnapshot() (Snapshot, error) {
 	s.OpenOrders = int(oo.Int64)
 	_ = r.db.QueryRow(`SELECT COALESCE(SUM(total),0) FROM daily_pnl`).Scan(&s.CumTotal)
 	return s, nil
+}
+
+// dbPing wraps PingContext so the test stub can implement the statusReader
+// interface and inject errors without touching a real *sql.DB.
+func (r *sqlReader) dbPing(ctx context.Context) error {
+	if r.db == nil {
+		return errors.New("nil db")
+	}
+	return r.db.PingContext(ctx)
 }
 
 // lastSnapshotTs returns the most recent position_snapshots.ts_ns or 0 if
@@ -422,6 +440,16 @@ func writeJSON(w http.ResponseWriter, v interface{}) {
 	}
 }
 
+// writeStatusError writes a JSON error body with the given HTTP status.
+// WHY: /status surfaces operational health — a 500 with structured body
+// tells an operator "this backend is degraded, here's why" rather than
+// silently returning stale data with no error indicator.
+func writeStatusError(w http.ResponseWriter, code int, msg string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": msg})
+}
+
 func parseLimit(r *http.Request, def, cap int) int {
 	q := r.URL.Query().Get("limit")
 	if q == "" {
@@ -471,31 +499,39 @@ func (s *server) handleStatus(w http.ResponseWriter, r *http.Request) {
 			halted = h
 		}
 	}
-	// WHY: cheap single-column query for the timestamp instead of pulling
-	// 20 columns + cum_total subquery via latestSnapshot just to read ts_ns.
+	// WHY: cheap single-column query for the timestamp + a real PingContext
+	// gated through the statusReader optional capability so test stubs can
+	// inject failures. On error, return 500 with a JSON error body —
+	// silently serving stale data masks operational issues from the
+	// operator who curls /status.
 	var lastTs int64
-	if sr, ok := s.r.(*sqlReader); ok {
-		if ts, err := sr.lastSnapshotTs(); err == nil {
-			lastTs = ts
+	pgConnected := true
+	if sr, ok := s.r.(statusReader); ok {
+		ts, err := sr.lastSnapshotTs()
+		if err != nil {
+			writeStatusError(w, http.StatusInternalServerError,
+				"lastSnapshotTs: "+err.Error())
+			return
+		}
+		lastTs = ts
+		// pg_connected: 2 s deadline so a hung Postgres can't stall /status.
+		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+		defer cancel()
+		if err := sr.dbPing(ctx); err != nil {
+			writeStatusError(w, http.StatusInternalServerError,
+				"pg_ping: "+err.Error())
+			return
 		}
 	} else if snap, err := s.r.latestSnapshot(); err == nil {
-		// Fallback for stub readers in tests.
+		// Fallback path for stub readers in tests that don't implement statusReader.
 		lastTs = snap.TsNs
 	}
 	// Phase 8: ws_connected proxy = any position_snapshots row in last 5s.
-	// pg_connected: if we got a snapshot scan (err==nil), the connection is up;
-	// also expose a fresh Ping when the reader is the live sqlReader.
 	wsConnected := false
 	if lastTs > 0 {
 		ageNs := time.Now().UnixNano() - lastTs
 		if ageNs >= 0 && ageNs < int64(5)*int64(time.Second) {
 			wsConnected = true
-		}
-	}
-	pgConnected := true
-	if sr, ok := s.r.(*sqlReader); ok && sr.db != nil {
-		if err := sr.db.Ping(); err != nil {
-			pgConnected = false
 		}
 	}
 	var lastAgeMs int64

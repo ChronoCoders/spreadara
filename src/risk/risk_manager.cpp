@@ -39,6 +39,12 @@ void RiskManager::record_attempt(std::chrono::steady_clock::time_point tp) {
     attempt_times_.push_back(tp);
 }
 
+void RiskManager::record_submission() {
+    const auto now = std::chrono::steady_clock::now();
+    std::lock_guard<std::mutex> lk(mu_);
+    record_attempt(now);
+}
+
 void RiskManager::record_rejection(std::chrono::steady_clock::time_point tp) {
     const auto cutoff = tp - kRejectionWindow;
     while (!rejection_times_.empty() && rejection_times_.front() < cutoff) {
@@ -80,9 +86,17 @@ RiskResult RiskManager::pre_trade_check(double side_signed_qty, double price, do
         result = RiskResult::REJECTED_PRICE;
     }
     else {
-        // 4. Rate limit — needs lock for attempt ring update.
+        // 4. Rate limit — READ-ONLY check against the window. The window is
+        // populated exclusively by record_submission() called from
+        // OrderManager immediately before each REST write call. We do NOT
+        // increment here because pre_trade_check fires far more often than
+        // actual REST traffic (the strategy evaluates every books5 tick).
         std::lock_guard<std::mutex> lk(mu_);
-        record_attempt(now);
+        // Trim stale entries before reading the count.
+        const auto cutoff = now - kRateWindow;
+        while (!attempt_times_.empty() && attempt_times_.front() < cutoff) {
+            attempt_times_.pop_front();
+        }
         if (static_cast<int>(attempt_times_.size()) > cfg_.risk.rate_limit_threshold) {
             result = RiskResult::REJECTED_RATE;
         }

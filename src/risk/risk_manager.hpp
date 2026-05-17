@@ -30,6 +30,13 @@ public:
     // side_signed_qty: +qty for buy, -qty for sell.
     RiskResult pre_trade_check(double side_signed_qty, double price, double current_mid);
 
+    // WHY: rate limit tracks REAL REST calls, not cheap local pre_trade_check
+    // evaluations. OrderManager calls this immediately before each
+    // place_order / cancel_order / amend_order / place_market_order so the
+    // rate-limit window reflects exchange-bound traffic, not strategy
+    // evaluation rate.
+    void record_submission();
+
     void set_open_order_count(int n) { open_order_count_.store(n, std::memory_order_release); }
     int open_order_count() const { return open_order_count_.load(std::memory_order_acquire); }
 

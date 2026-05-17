@@ -113,9 +113,13 @@ TEST(RiskManager, RateLimit) {
     cfg.risk.rate_limit_threshold = 5;
     risk::PositionTracker pt;
     risk::RiskManager rm(cfg, pt);
-    for (int i = 0; i < 5; ++i) {
-        EXPECT_EQ(rm.pre_trade_check(+0.01, 100.0, 100.0), risk::RiskResult::APPROVED);
-    }
+    // WHY: window is populated by record_submission() (called from OrderManager
+    // before each REST write), NOT by pre_trade_check itself. With threshold=5
+    // and 5 submissions in the window, the check is APPROVED (5 > 5 is false).
+    // The 6th submission pushes the count to 6, which trips on next check.
+    for (int i = 0; i < 5; ++i) rm.record_submission();
+    EXPECT_EQ(rm.pre_trade_check(+0.01, 100.0, 100.0), risk::RiskResult::APPROVED);
+    rm.record_submission();  // 6th submission
     EXPECT_EQ(rm.pre_trade_check(+0.01, 100.0, 100.0), risk::RiskResult::REJECTED_RATE);
 }
 

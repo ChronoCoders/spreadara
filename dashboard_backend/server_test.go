@@ -1,8 +1,10 @@
 package main
 
 import (
+	"context"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +13,18 @@ import (
 	"testing"
 	"time"
 )
+
+// statusStub adds statusReader to the base stubReader so /api/v5/status
+// failure paths are reachable from tests without a live PG connection.
+type statusStub struct {
+	stubReader
+	ts      int64
+	tsErr   error
+	pingErr error
+}
+
+func (s *statusStub) lastSnapshotTs() (int64, error)         { return s.ts, s.tsErr }
+func (s *statusStub) dbPing(_ context.Context) error          { return s.pingErr }
 
 type stubReader struct {
 	snap Snapshot
@@ -218,4 +232,85 @@ func dialWS(host, path string) (interface {
 		}
 	}
 	return conn, nil
+}
+
+func TestStatusHappyPath(t *testing.T) {
+	stub := &statusStub{
+		stubReader: stubReader{snap: Snapshot{TsNs: time.Now().UnixNano(), Mid: 30000}},
+		ts:         time.Now().UnixNano(),
+	}
+	srv := newServer(stub, 50*time.Millisecond, "")
+	ts := httptest.NewServer(srv.routes())
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/api/v5/status")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	var body map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range []string{"exchange", "ws_streams", "uptime_seconds",
+		"last_event_ts_ns", "halted", "ws_connected", "pg_connected", "last_snapshot_age_ms"} {
+		if _, ok := body[k]; !ok {
+			t.Errorf("missing key %q in status JSON: %v", k, body)
+		}
+	}
+	if body["pg_connected"] != true {
+		t.Errorf("pg_connected = %v, want true", body["pg_connected"])
+	}
+}
+
+func TestStatusTsQueryFailure(t *testing.T) {
+	stub := &statusStub{tsErr: errors.New("connection refused")}
+	srv := newServer(stub, 50*time.Millisecond, "")
+	ts := httptest.NewServer(srv.routes())
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/api/v5/status")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 500 {
+		t.Fatalf("status = %d, want 500", resp.StatusCode)
+	}
+	var body map[string]string
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(body["error"], "lastSnapshotTs") {
+		t.Errorf("error body = %v, want substring 'lastSnapshotTs'", body)
+	}
+}
+
+func TestStatusPingFailure(t *testing.T) {
+	stub := &statusStub{
+		ts:      time.Now().UnixNano(),
+		pingErr: errors.New("server closed the connection"),
+	}
+	srv := newServer(stub, 50*time.Millisecond, "")
+	ts := httptest.NewServer(srv.routes())
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/api/v5/status")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 500 {
+		t.Fatalf("status = %d, want 500", resp.StatusCode)
+	}
+	var body map[string]string
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(body["error"], "pg_ping") {
+		t.Errorf("error body = %v, want substring 'pg_ping'", body)
+	}
 }

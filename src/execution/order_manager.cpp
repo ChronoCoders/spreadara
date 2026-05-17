@@ -203,6 +203,7 @@ bool OrderManager::place_new(int slot_idx, double price, double qty) {
     // async-ACK path (Phase 9) can read it back when the ACK arrives later.
     s.submit_cycles = infra::rdtsc_cycles();
     const char* side_str = (s.side > 0) ? "BUY" : "SELL";
+    rm_.record_submission();
     OrderAck a = rest_.place_order(side_str, qty, price, true, s.client_order_id);
     if (a.ok) {
         s.exchange_order_id = a.exchange_order_id;
@@ -274,6 +275,7 @@ double OrderManager::latency_p99_us() const {
 bool OrderManager::cancel_slot(int slot_idx) {
     auto& s = slots_[slot_idx];
     if (!s.active) return true;
+    rm_.record_submission();
     CancelAck c = rest_.cancel_order(s.client_order_id, s.exchange_order_id);
     if (c.ok) {
         transition(slot_idx, OrderState::CANCELED);
@@ -432,6 +434,7 @@ void OrderManager::cancel_and_flatten_locked(int& cancelled_out, bool& flattened
         const char* side = inv > 0 ? "SELL" : "BUY";
         const double qty = std::fabs(inv);
         spdlog::critical("flatten_market_order side={} qty={:.8f}", side, qty);
+        rm_.record_submission();
         const auto a = rest_.place_market_order(side, qty, make_cid());
         flattened_out = a.ok;
     }
