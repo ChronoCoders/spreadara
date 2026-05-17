@@ -209,6 +209,7 @@ public:
           resolver_(strand_),
           ws_(std::make_unique<websocket::stream<beast::ssl_stream<beast::tcp_stream>>>(strand_, ssl_ctx)),
           backoff_timer_(strand_),
+          ping_timer_(strand_),
           ssl_ctx_ref_(&ssl_ctx),
           host_(std::move(host)),
           port_(std::move(port)),
@@ -227,6 +228,7 @@ public:
         asio::post(strand_, [self = shared_from_this()] {
             boost::system::error_code ec;
             self->backoff_timer_.cancel(ec);
+            self->ping_timer_.cancel(ec);
             if (self->ws_ && self->ws_->is_open()) {
                 self->ws_->async_close(websocket::close_code::normal,
                     [self2 = self](boost::system::error_code) { (void)self2; });
@@ -328,6 +330,23 @@ private:
         enqueue_write(std::make_shared<std::string>("pong"));
     }
 
+    // WHY: OKX private stream closes after 30s of client silence — and on a
+    // quiet account (no fills, no orders) we'd otherwise never write. The
+    // server does not initiate pings on the private channel the way it does
+    // on public (where book updates keep traffic flowing), so we send our
+    // own literal 4-byte "ping" frame every 25s. Re-armed after each tick.
+    // Cancelled on disconnect/stop; re-armed by subscribe-ack on reconnect.
+    void arm_ping_timer() {
+        if (stopping_.load(std::memory_order_acquire)) return;
+        ping_timer_.expires_after(std::chrono::seconds(25));
+        ping_timer_.async_wait([self = shared_from_this()](boost::system::error_code wec) {
+            if (wec) return;  // cancelled by reconnect / stop
+            if (self->stopping_.load(std::memory_order_acquire)) return;
+            self->enqueue_write(std::make_shared<std::string>("ping"));
+            self->arm_ping_timer();
+        });
+    }
+
     void do_read() {
         ws_->async_read(buffer_,
             beast::bind_front_handler(&OkxPrivateWsConnection::on_read, shared_from_this()));
@@ -389,6 +408,12 @@ private:
             }
             if (event_sv == "subscribe") {
                 spdlog::info("okx_private_subscribe_ok");
+                // WHY: re-arm on every subscribe ack — both orders and
+                // positions channels each return one, so this fires twice
+                // on initial connect. expires_after cancels any prior
+                // pending wait, so the net effect is "25s from the most
+                // recent subscribe ack."
+                arm_ping_timer();
                 return;
             }
         }
@@ -482,6 +507,11 @@ private:
         if (stopping_.load(std::memory_order_acquire)) return;
         spdlog::warn("okx_private_disconnect stage={} err={}", stage, ec.message());
 
+        // Cancel keepalive so a pending wait can't enqueue a ping onto a
+        // dead socket. arm_ping_timer fires again on the next subscribe ack.
+        boost::system::error_code cec;
+        ping_timer_.cancel(cec);
+
         ++attempt_;
         if (attempt_ > cfg_.reconnect.max_attempts) {
             spdlog::critical("okx_private_reconnect_exhausted");
@@ -510,6 +540,7 @@ private:
     tcp::resolver resolver_;
     std::unique_ptr<websocket::stream<beast::ssl_stream<beast::tcp_stream>>> ws_;
     asio::steady_timer backoff_timer_;
+    asio::steady_timer ping_timer_;
     ssl::context* ssl_ctx_ref_{nullptr};
     beast::flat_buffer buffer_;
     simdjson::ondemand::parser parser_;
