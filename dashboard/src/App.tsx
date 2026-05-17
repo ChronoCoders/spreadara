@@ -35,6 +35,9 @@ interface ExtSnapshot extends Snapshot {
   avg_spread_bps?: number;
   fills_per_10s?: number;
   volatility?: number;
+  gamma?: number;
+  k?: number;
+  t?: number;
 }
 
 const priceFmt = new Intl.NumberFormat('en-US', {
@@ -153,6 +156,9 @@ export default function App() {
   const avgSpreadBps = s?.avg_spread_bps;
   const fillsPer10s = s?.fills_per_10s;
   const volatility = s?.volatility;
+  const gamma = s?.gamma;
+  const kParam = s?.k;
+  const tHorizon = s?.t;
 
   const invTone = signTone(inventory);
 
@@ -289,15 +295,21 @@ export default function App() {
           </MetricCard>
 
           <MetricCard label="A-S Parameters">
-            <div className="metric-value muted">γ —</div>
+            <div className={`metric-value ${gamma === undefined ? 'muted' : ''}`}>
+              γ {gamma !== undefined ? gamma.toFixed(3) : '—'}
+            </div>
             <div className="metric-sub-rows">
               <div className="sub-row">
                 <span>k</span>
-                <span className="val dim">—</span>
+                <span className={`val ${kParam === undefined ? 'dim' : ''}`}>
+                  {kParam !== undefined ? kParam.toFixed(3) : '—'}
+                </span>
               </div>
               <div className="sub-row">
                 <span>T</span>
-                <span className="val dim">—</span>
+                <span className={`val ${tHorizon === undefined ? 'dim' : ''}`}>
+                  {tHorizon !== undefined ? tHorizon.toFixed(2) : '—'}
+                </span>
               </div>
               <div className="sub-row">
                 <span>Realized Vol</span>

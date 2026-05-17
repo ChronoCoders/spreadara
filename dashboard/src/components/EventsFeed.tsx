@@ -1,18 +1,14 @@
 import React from 'react';
 import type { SystemEvent } from '../api';
 
-function parseTs(ts: string): Date | null {
-  if (!ts) return null;
-  const n = Number(ts);
-  if (Number.isFinite(n) && n > 0) {
-    const ms = n > 1e14 ? n / 1e6 : n;
-    return new Date(ms);
-  }
-  const d = new Date(ts);
+function parseTs(ts: number | undefined): Date | null {
+  if (typeof ts !== 'number' || !Number.isFinite(ts) || ts <= 0) return null;
+  const ms = ts > 1e14 ? ts / 1e6 : ts;
+  const d = new Date(ms);
   return isNaN(d.getTime()) ? null : d;
 }
 
-function fmtTime(ts: string): string {
+function fmtTime(ts: number | undefined): string {
   const d = parseTs(ts);
   if (!d) return '—';
   const h = String(d.getUTCHours()).padStart(2, '0');
@@ -57,7 +53,7 @@ export function EventsFeed({ events }: { events: SystemEvent[] }) {
             ) : (
               events.map((e, i) => (
                 <tr key={i}>
-                  <td className="col-time">{fmtTime(e.ts)}</td>
+                  <td className="col-time">{fmtTime(e.ts_ns)}</td>
                   <td className="col-sev">
                     <span className={`sev ${sevClass(e.severity)}`}>{e.severity || '—'}</span>
                   </td>

@@ -7,18 +7,14 @@ interface Props {
   formatPrice: (n: number) => string;
 }
 
-function parseTsNs(ts: string): Date | null {
-  if (!ts) return null;
-  const n = Number(ts);
-  if (Number.isFinite(n) && n > 0) {
-    const ms = n > 1e14 ? n / 1e6 : n;
-    return new Date(ms);
-  }
-  const d = new Date(ts);
+function parseTsNs(ts: number | undefined): Date | null {
+  if (typeof ts !== 'number' || !Number.isFinite(ts) || ts <= 0) return null;
+  const ms = ts > 1e14 ? ts / 1e6 : ts;
+  const d = new Date(ms);
   return isNaN(d.getTime()) ? null : d;
 }
 
-function fmtTime(ts: string): string {
+function fmtTime(ts: number | undefined): string {
   const d = parseTsNs(ts);
   if (!d) return '—';
   const h = String(d.getUTCHours()).padStart(2, '0');
@@ -60,7 +56,7 @@ export function TradesTable({ trades, formatPrice }: Props) {
                 const isBuy = t.side > 0;
                 return (
                   <tr key={`${t.order_id}-${i}`}>
-                    <td className="col-time">{fmtTime(t.ts)}</td>
+                    <td className="col-time">{fmtTime(t.ts_ns)}</td>
                     <td className="col-side">
                       <Pill tone={isBuy ? 'green' : 'red'}>{isBuy ? 'BUY' : 'SELL'}</Pill>
                     </td>

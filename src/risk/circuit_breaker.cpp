@@ -73,9 +73,14 @@ void CircuitBreaker::do_tick(std::chrono::steady_clock::time_point now) {
         }
     }
 
-    // Unhedged duration — latch on cross, clear when inv returns to 0.
+    // Unhedged duration — latch on cross, clear when inv returns to ~0.
+    // WHY: float accumulation across fills can leave residuals like 1e-18 even
+    // after a position fully nets out. Treat anything below 1e-6 contracts as
+    // flat so the timer doesn't latch on noise that the operator can never
+    // clear.
+    constexpr double kInventoryEpsilon = 1e-6;
     const double inv = pt_.current_inventory();
-    if (std::abs(inv) > 0.0) {
+    if (std::abs(inv) > kInventoryEpsilon) {
         if (!inv_started_) {
             inv_started_ = true;
             inv_started_at_ = now;
