@@ -575,11 +575,7 @@ func newServer(r dbReader, wsInterval time.Duration, corsOrigin string) *server 
 }
 
 func defaultBacktestRunner() error {
-	bin := envStrLocal("SPREADARA_BIN", "./spreadara")
-	cmd := exec.Command(bin, "--backtest")
-	cmd.Stdout = nil
-	cmd.Stderr = nil
-	return cmd.Start()
+	return runTradingBinary("--backtest")
 }
 
 // readBacktestCSV parses the C++ backtest writer's summary CSV. Current
@@ -690,12 +686,26 @@ func fetchOKXFundingRate(ctx context.Context) (FundingRate, error) {
 	}, nil
 }
 
-func defaultCalibrationRunner() error {
+// runTradingBinary forks the trading binary with the given flags. The
+// binary expects to find config/config.toml and data/ relative to its CWD,
+// so the spawn is rooted at SPREADARA_HOME (default: ".") and the CSV/log
+// outputs land there. stdout/stderr go to a tmp file so a crash leaves a
+// trail without polluting the dashboard's own log.
+func runTradingBinary(args ...string) error {
 	bin := envStrLocal("SPREADARA_BIN", "./spreadara")
-	cmd := exec.Command(bin, "--calibration-smoke")
-	cmd.Stdout = nil
-	cmd.Stderr = nil
+	home := envStrLocal("SPREADARA_HOME", ".")
+	cmd := exec.Command(bin, args...)
+	cmd.Dir = home
+	logPath := envStrLocal("SPREADARA_SPAWN_LOG", "/tmp/spreadara-spawn.log")
+	if f, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644); err == nil {
+		cmd.Stdout = f
+		cmd.Stderr = f
+	}
 	return cmd.Start()
+}
+
+func defaultCalibrationRunner() error {
+	return runTradingBinary("--calibration-smoke")
 }
 
 // enrichSnapshot fills the Phase-7 derived fields on top of whatever the
