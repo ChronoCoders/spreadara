@@ -25,6 +25,7 @@ export interface Trade {
   qty: number;
   fee: number;
   fee_asset: string;
+  is_maker?: boolean;
 }
 
 export interface DailyPnl {
@@ -43,6 +44,18 @@ export interface SystemEvent {
   msg: string;
 }
 
+export interface SpreadPoint {
+  ts_ns: number;
+  spread_bps: number;
+}
+
+export interface InventoryPoint {
+  ts_ns: number;
+  inventory: number;
+  mid_price: number;
+}
+
+
 async function getJSON<T>(path: string): Promise<T> {
   const r = await fetch(`${API_BASE}${path}`);
   if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
@@ -54,6 +67,8 @@ export const api = {
   trades: (limit = 100) => getJSON<Trade[]>(`/api/trades?limit=${limit}`),
   daily: () => getJSON<DailyPnl[]>('/api/pnl/daily'),
   events: (limit = 100) => getJSON<SystemEvent[]>(`/api/events?limit=${limit}`),
+  spreads: (limit = 1000) => getJSON<SpreadPoint[]>(`/api/spreads?limit=${limit}`),
+  inventory: (limit = 1000) => getJSON<InventoryPoint[]>(`/api/inventory?limit=${limit}`),
 };
 
 export type WsState = 'connected' | 'disconnected';

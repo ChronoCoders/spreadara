@@ -72,6 +72,7 @@ type Trade struct {
 	Qty      float64 `json:"qty"`
 	Fee      float64 `json:"fee"`
 	FeeAsset string  `json:"fee_asset"`
+	IsMaker  bool    `json:"is_maker"`
 }
 
 type DailyPnl struct {
@@ -90,11 +91,24 @@ type SystemEvent struct {
 	Msg      string `json:"msg"`
 }
 
+type SpreadPoint struct {
+	TsNs      int64   `json:"ts_ns"`
+	SpreadBps float64 `json:"spread_bps"`
+}
+
+type InventoryPoint struct {
+	TsNs      int64   `json:"ts_ns"`
+	Inventory float64 `json:"inventory"`
+	MidPrice  float64 `json:"mid_price"`
+}
+
 type dbReader interface {
 	latestSnapshot() (Snapshot, error)
 	recentTrades(limit int) ([]Trade, error)
 	dailyPnl() ([]DailyPnl, error)
 	recentEvents(limit int) ([]SystemEvent, error)
+	spreadHistory(limit int) ([]SpreadPoint, error)
+	inventoryHistory(limit int) ([]InventoryPoint, error)
 }
 
 // haltedReader is an optional capability for readers that can compute the
@@ -238,7 +252,7 @@ func (r *sqlReader) avgSpreadBps60s() (float64, error) {
 
 func (r *sqlReader) recentTrades(limit int) ([]Trade, error) {
 	rows, err := r.db.Query(
-		`SELECT ts_ns, order_id, side, price, qty, fee, fee_asset
+		`SELECT ts_ns, order_id, side, price, qty, fee, fee_asset, COALESCE(is_maker, TRUE)
 		 FROM trades ORDER BY ts_ns DESC LIMIT $1`, limit)
 	if err != nil {
 		return nil, err
@@ -248,7 +262,7 @@ func (r *sqlReader) recentTrades(limit int) ([]Trade, error) {
 	for rows.Next() {
 		var t Trade
 		var side int16
-		if err := rows.Scan(&t.TsNs, &t.OrderID, &side, &t.Price, &t.Qty, &t.Fee, &t.FeeAsset); err != nil {
+		if err := rows.Scan(&t.TsNs, &t.OrderID, &side, &t.Price, &t.Qty, &t.Fee, &t.FeeAsset, &t.IsMaker); err != nil {
 			return nil, err
 		}
 		t.Side = int(side)
@@ -338,6 +352,49 @@ func (r *sqlReader) wsStreamsUp() (bool, error) {
 		return false, err
 	}
 	return n > 0, nil
+}
+
+// spreadHistory returns the most recent `limit` rows of (ts_ns, spread_bps)
+// from position_snapshots in descending ts order. NULL or non-positive
+// spread_bps values are filtered (book-not-ready rows).
+func (r *sqlReader) spreadHistory(limit int) ([]SpreadPoint, error) {
+	rows, err := r.db.Query(
+		`SELECT ts_ns, spread_bps FROM position_snapshots
+		 WHERE spread_bps IS NOT NULL AND spread_bps > 0
+		 ORDER BY ts_ns DESC LIMIT $1`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []SpreadPoint{}
+	for rows.Next() {
+		var p SpreadPoint
+		if err := rows.Scan(&p.TsNs, &p.SpreadBps); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+// inventoryHistory returns (ts_ns, inventory, mid_price) ordered by ts_ns desc.
+func (r *sqlReader) inventoryHistory(limit int) ([]InventoryPoint, error) {
+	rows, err := r.db.Query(
+		`SELECT ts_ns, inventory, mid_price FROM position_snapshots
+		 ORDER BY ts_ns DESC LIMIT $1`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []InventoryPoint{}
+	for rows.Next() {
+		var p InventoryPoint
+		if err := rows.Scan(&p.TsNs, &p.Inventory, &p.MidPrice); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
 }
 
 func (r *sqlReader) recentEvents(limit int) ([]SystemEvent, error) {
@@ -614,6 +671,34 @@ func (s *server) handlePnlDaily(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, d)
 }
 
+func (s *server) handleSpreads(w http.ResponseWriter, r *http.Request) {
+	s.cors(w, r)
+	if r.Method == http.MethodOptions {
+		return
+	}
+	limit := parseLimit(r, 1000, 10000)
+	pts, err := s.r.spreadHistory(limit)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, pts)
+}
+
+func (s *server) handleInventory(w http.ResponseWriter, r *http.Request) {
+	s.cors(w, r)
+	if r.Method == http.MethodOptions {
+		return
+	}
+	limit := parseLimit(r, 1000, 10000)
+	pts, err := s.r.inventoryHistory(limit)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, pts)
+}
+
 func (s *server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	s.cors(w, r)
 	if r.Method == http.MethodOptions {
@@ -826,6 +911,8 @@ func (s *server) routes() http.Handler {
 	mux.HandleFunc("/api/trades", s.handleTrades)
 	mux.HandleFunc("/api/pnl/daily", s.handlePnlDaily)
 	mux.HandleFunc("/api/events", s.handleEvents)
+	mux.HandleFunc("/api/spreads", s.handleSpreads)
+	mux.HandleFunc("/api/inventory", s.handleInventory)
 	mux.HandleFunc("/api/v5/status", s.handleStatus)
 	mux.HandleFunc("/ws", s.handleWS)
 	// TODO(phase 7): auth.

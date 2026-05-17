@@ -38,6 +38,12 @@ func (s *stubReader) dailyPnl() ([]DailyPnl, error) { return []DailyPnl{}, nil }
 func (s *stubReader) recentEvents(limit int) ([]SystemEvent, error) {
 	return []SystemEvent{}, nil
 }
+func (s *stubReader) spreadHistory(limit int) ([]SpreadPoint, error) {
+	return []SpreadPoint{{TsNs: 1, SpreadBps: 1.5}, {TsNs: 2, SpreadBps: 2.0}}, nil
+}
+func (s *stubReader) inventoryHistory(limit int) ([]InventoryPoint, error) {
+	return []InventoryPoint{{TsNs: 1, Inventory: 0.05, MidPrice: 78000.0}}, nil
+}
 
 func TestSnapshotHandler(t *testing.T) {
 	stub := &stubReader{snap: Snapshot{Inventory: 1.5, Mid: 30000.0}}
@@ -59,6 +65,48 @@ func TestSnapshotHandler(t *testing.T) {
 	}
 	if got.Inventory != 1.5 || got.Mid != 30000.0 {
 		t.Fatalf("unexpected snapshot: %+v", got)
+	}
+}
+
+func TestSpreadsHandler(t *testing.T) {
+	srv := newServer(&stubReader{}, 50*time.Millisecond, "")
+	ts := httptest.NewServer(srv.routes())
+	defer ts.Close()
+	resp, err := http.Get(ts.URL + "/api/spreads?limit=10")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	var got []SpreadPoint
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0].SpreadBps != 1.5 {
+		t.Fatalf("unexpected spreads: %+v", got)
+	}
+}
+
+func TestInventoryHandler(t *testing.T) {
+	srv := newServer(&stubReader{}, 50*time.Millisecond, "")
+	ts := httptest.NewServer(srv.routes())
+	defer ts.Close()
+	resp, err := http.Get(ts.URL + "/api/inventory?limit=10")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	var got []InventoryPoint
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].MidPrice != 78000.0 {
+		t.Fatalf("unexpected inventory: %+v", got)
 	}
 }
 

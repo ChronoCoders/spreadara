@@ -18,10 +18,6 @@ export function Topbar({ wsState }: { wsState: WsState }) {
 
   return (
     <header className="topbar">
-      <div className="brand">
-        <span className="brand-primary">SPREAD</span>
-        <span className="brand-accent">ARA</span>
-      </div>
       <div className="topbar-right">
         <div className="status-group">
           <span className={`dot ${wsState === 'connected' ? 'dot-green' : 'dot-red'}`} />
