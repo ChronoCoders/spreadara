@@ -13,3 +13,5 @@ node_modules/
 dist/
 *.tsbuildinfo
 data/recorded/*.bin
+backtest_results.csv
+calibration_top10.csv
