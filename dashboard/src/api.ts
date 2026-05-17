@@ -55,9 +55,47 @@ export interface InventoryPoint {
   mid_price: number;
 }
 
+export interface OrdersPayload {
+  open_count: number;
+  events: SystemEvent[];
+}
+
+export interface FundingRate {
+  funding_rate: number;
+  next_funding_time: number;
+  funding_rate_8h: number;
+}
+
+export interface CalibrationRow {
+  gamma: number;
+  k: number;
+  t: number;
+  sharpe: number;
+  pnl: number;
+  max_dd: number;
+  fills: number;
+}
+
+export interface SystemStatus {
+  exchange: string;
+  ws_streams: Record<string, string>;
+  uptime_seconds: number;
+  last_event_ts_ns: number;
+  halted: boolean;
+  ws_connected: boolean;
+  pg_connected: boolean;
+  last_snapshot_age_ms: number;
+}
+
 
 async function getJSON<T>(path: string): Promise<T> {
   const r = await fetch(`${API_BASE}${path}`);
+  if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+  return r.json();
+}
+
+async function postJSON<T>(path: string): Promise<T> {
+  const r = await fetch(`${API_BASE}${path}`, { method: 'POST' });
   if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
   return r.json();
 }
@@ -69,6 +107,11 @@ export const api = {
   events: (limit = 100) => getJSON<SystemEvent[]>(`/api/events?limit=${limit}`),
   spreads: (limit = 1000) => getJSON<SpreadPoint[]>(`/api/spreads?limit=${limit}`),
   inventory: (limit = 1000) => getJSON<InventoryPoint[]>(`/api/inventory?limit=${limit}`),
+  orders: (limit = 50) => getJSON<OrdersPayload>(`/api/orders?limit=${limit}`),
+  fundingRate: () => getJSON<FundingRate>('/api/funding-rate'),
+  calibration: () => getJSON<CalibrationRow[]>('/api/calibration'),
+  calibrationRun: () => postJSON<{ status: string }>('/api/calibration/run'),
+  status: () => getJSON<SystemStatus>('/api/v5/status'),
 };
 
 export type WsState = 'connected' | 'disconnected';

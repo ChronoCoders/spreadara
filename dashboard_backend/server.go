@@ -12,6 +12,7 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/binary"
+	"encoding/csv"
 	"encoding/json"
 	"errors"
 	"io"
@@ -19,8 +20,10 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -102,6 +105,27 @@ type InventoryPoint struct {
 	MidPrice  float64 `json:"mid_price"`
 }
 
+type OrdersPayload struct {
+	OpenCount int           `json:"open_count"`
+	Events    []SystemEvent `json:"events"`
+}
+
+type FundingRate struct {
+	FundingRate     float64 `json:"funding_rate"`
+	NextFundingTime int64   `json:"next_funding_time"`
+	FundingRate8h   float64 `json:"funding_rate_8h"`
+}
+
+type CalibrationRow struct {
+	Gamma  float64 `json:"gamma"`
+	K      float64 `json:"k"`
+	T      float64 `json:"t"`
+	Sharpe float64 `json:"sharpe"`
+	Pnl    float64 `json:"pnl"`
+	MaxDD  float64 `json:"max_dd"`
+	Fills  int     `json:"fills"`
+}
+
 type dbReader interface {
 	latestSnapshot() (Snapshot, error)
 	recentTrades(limit int) ([]Trade, error)
@@ -109,6 +133,7 @@ type dbReader interface {
 	recentEvents(limit int) ([]SystemEvent, error)
 	spreadHistory(limit int) ([]SpreadPoint, error)
 	inventoryHistory(limit int) ([]InventoryPoint, error)
+	orderEvents(limit int) ([]SystemEvent, error)
 }
 
 // haltedReader is an optional capability for readers that can compute the
@@ -397,6 +422,29 @@ func (r *sqlReader) inventoryHistory(limit int) ([]InventoryPoint, error) {
 	return out, rows.Err()
 }
 
+// orderEvents returns recent system_events filtered to sources that emit
+// order-lifecycle transitions (execution / order manager / private user-data
+// WebSocket). Used by /api/orders.
+func (r *sqlReader) orderEvents(limit int) ([]SystemEvent, error) {
+	rows, err := r.db.Query(
+		`SELECT ts_ns, severity, source, code, msg FROM system_events
+		 WHERE source IN ('execution','order_manager','okx_private_ws')
+		 ORDER BY ts_ns DESC LIMIT $1`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []SystemEvent{}
+	for rows.Next() {
+		var e SystemEvent
+		if err := rows.Scan(&e.TsNs, &e.Severity, &e.Source, &e.Code, &e.Msg); err != nil {
+			return nil, err
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
 func (r *sqlReader) recentEvents(limit int) ([]SystemEvent, error) {
 	rows, err := r.db.Query(
 		`SELECT ts_ns, severity, source, code, msg FROM system_events ORDER BY ts_ns DESC LIMIT $1`, limit)
@@ -428,6 +476,19 @@ type server struct {
 	// SPREADARA_MAX_INVENTORY_DISPLAY; config-file value is operator-doc only
 	// (the Go backend does not parse TOML).
 	maxInventoryDisplay float64
+	// v0.11 additions: funding rate is fetched live from OKX with a 30s cache,
+	// calibration result list is parsed from a CSV on disk, and a calibration
+	// run forks the trading binary as a background process. All three are
+	// substitutable so tests don't hit the network/disk/exec.
+	fundingFetcher    func(context.Context) (FundingRate, error)
+	calibrationCsv    string
+	calibrationRunner func() error
+
+	fundingMu   sync.Mutex
+	fundingAt   time.Time
+	fundingVal  FundingRate
+	fundingErr  error
+	fundingTTL  time.Duration
 }
 
 func newServer(r dbReader, wsInterval time.Duration, corsOrigin string) *server {
@@ -460,7 +521,67 @@ func newServer(r dbReader, wsInterval time.Duration, corsOrigin string) *server 
 		exchangeName:        exch,
 		startTime:           time.Now(),
 		maxInventoryDisplay: maxInvDisp,
+		fundingFetcher:      fetchOKXFundingRate,
+		calibrationCsv:      envStrLocal("SPREADARA_CALIBRATION_CSV", "calibration_top10.csv"),
+		calibrationRunner:   defaultCalibrationRunner,
+		fundingTTL:          30 * time.Second,
 	}
+}
+
+func envStrLocal(name, def string) string {
+	if v := os.Getenv(name); v != "" {
+		return v
+	}
+	return def
+}
+
+// fetchOKXFundingRate calls OKX's public funding-rate endpoint. instId is
+// fixed to BTC-USDT-SWAP per the system's primary symbol; override via env
+// var SPREADARA_FUNDING_INST_ID if a future symbol becomes primary.
+func fetchOKXFundingRate(ctx context.Context) (FundingRate, error) {
+	instId := envStrLocal("SPREADARA_FUNDING_INST_ID", "BTC-USDT-SWAP")
+	url := "https://www.okx.com/api/v5/public/funding-rate?instId=" + instId
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return FundingRate{}, err
+	}
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return FundingRate{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return FundingRate{}, errors.New("okx http " + strconv.Itoa(resp.StatusCode))
+	}
+	var body struct {
+		Code string `json:"code"`
+		Data []struct {
+			FundingRate     string `json:"fundingRate"`
+			NextFundingTime string `json:"nextFundingTime"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		return FundingRate{}, err
+	}
+	if body.Code != "0" || len(body.Data) == 0 {
+		return FundingRate{}, errors.New("okx response code=" + body.Code)
+	}
+	fr, _ := strconv.ParseFloat(body.Data[0].FundingRate, 64)
+	nt, _ := strconv.ParseInt(body.Data[0].NextFundingTime, 10, 64)
+	return FundingRate{
+		FundingRate:     fr,
+		NextFundingTime: nt,
+		FundingRate8h:   fr, // OKX rate is already the 8-hour funding rate.
+	}, nil
+}
+
+func defaultCalibrationRunner() error {
+	bin := envStrLocal("SPREADARA_BIN", "./spreadara")
+	cmd := exec.Command(bin, "--calibration-smoke")
+	cmd.Stdout = nil
+	cmd.Stderr = nil
+	return cmd.Start()
 }
 
 // enrichSnapshot fills the Phase-7 derived fields on top of whatever the
@@ -699,6 +820,141 @@ func (s *server) handleInventory(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, pts)
 }
 
+func (s *server) handleOrders(w http.ResponseWriter, r *http.Request) {
+	s.cors(w, r)
+	if r.Method == http.MethodOptions {
+		return
+	}
+	snap, err := s.r.latestSnapshot()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	limit := parseLimit(r, 50, 500)
+	evs, err := s.r.orderEvents(limit)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, OrdersPayload{OpenCount: snap.OpenOrders, Events: evs})
+}
+
+// getFundingRate returns the cached value if fresh, otherwise refetches.
+// 30s TTL — funding rate updates every 8h on OKX so 30s is comfortably
+// inside any meaningful change window.
+func (s *server) getFundingRate(ctx context.Context) (FundingRate, error) {
+	s.fundingMu.Lock()
+	defer s.fundingMu.Unlock()
+	if !s.fundingAt.IsZero() && time.Since(s.fundingAt) < s.fundingTTL {
+		return s.fundingVal, s.fundingErr
+	}
+	val, err := s.fundingFetcher(ctx)
+	s.fundingVal = val
+	s.fundingErr = err
+	s.fundingAt = time.Now()
+	return val, err
+}
+
+func (s *server) handleFundingRate(w http.ResponseWriter, r *http.Request) {
+	s.cors(w, r)
+	if r.Method == http.MethodOptions {
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 6*time.Second)
+	defer cancel()
+	val, err := s.getFundingRate(ctx)
+	if err != nil {
+		writeStatusError(w, http.StatusBadGateway, "okx: "+err.Error())
+		return
+	}
+	writeJSON(w, val)
+}
+
+func (s *server) handleCalibration(w http.ResponseWriter, r *http.Request) {
+	s.cors(w, r)
+	if r.Method == http.MethodOptions {
+		return
+	}
+	rows, err := readCalibrationCSV(s.calibrationCsv)
+	if err != nil {
+		// Empty CSV / missing file isn't a 500 — it's "no calibration has been
+		// run yet" and the UI should render an empty table.
+		if errors.Is(err, os.ErrNotExist) {
+			writeJSON(w, []CalibrationRow{})
+			return
+		}
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, rows)
+}
+
+func (s *server) handleCalibrationRun(w http.ResponseWriter, r *http.Request) {
+	s.cors(w, r)
+	if r.Method == http.MethodOptions {
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if err := s.calibrationRunner(); err != nil {
+		writeStatusError(w, http.StatusInternalServerError, "spawn: "+err.Error())
+		return
+	}
+	writeJSON(w, map[string]string{"status": "started"})
+}
+
+// readCalibrationCSV parses the top-N CSV produced by the C++ calibration
+// sweep. The C++ writer emits a header row followed by data rows with
+// columns gamma, k, T (or horizon), sharpe, pnl, max_dd, fills (case-insensitive,
+// extra columns ignored). Order is matched by header lookup.
+func readCalibrationCSV(path string) ([]CalibrationRow, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	rd := csv.NewReader(f)
+	rd.FieldsPerRecord = -1
+	records, err := rd.ReadAll()
+	if err != nil {
+		return nil, err
+	}
+	if len(records) == 0 {
+		return []CalibrationRow{}, nil
+	}
+	idx := map[string]int{}
+	for i, h := range records[0] {
+		idx[strings.ToLower(strings.TrimSpace(h))] = i
+	}
+	get := func(row []string, names ...string) string {
+		for _, n := range names {
+			if i, ok := idx[n]; ok && i < len(row) {
+				return row[i]
+			}
+		}
+		return ""
+	}
+	out := make([]CalibrationRow, 0, len(records)-1)
+	for _, row := range records[1:] {
+		if len(row) == 0 {
+			continue
+		}
+		gamma, _ := strconv.ParseFloat(strings.TrimSpace(get(row, "gamma", "γ")), 64)
+		k, _ := strconv.ParseFloat(strings.TrimSpace(get(row, "k")), 64)
+		t, _ := strconv.ParseFloat(strings.TrimSpace(get(row, "t", "horizon")), 64)
+		sharpe, _ := strconv.ParseFloat(strings.TrimSpace(get(row, "sharpe")), 64)
+		pnl, _ := strconv.ParseFloat(strings.TrimSpace(get(row, "pnl", "p&l", "p_n_l")), 64)
+		maxDd, _ := strconv.ParseFloat(strings.TrimSpace(get(row, "max_dd", "maxdd", "max_drawdown")), 64)
+		fills, _ := strconv.Atoi(strings.TrimSpace(get(row, "fills", "fill_count")))
+		out = append(out, CalibrationRow{
+			Gamma: gamma, K: k, T: t, Sharpe: sharpe, Pnl: pnl, MaxDD: maxDd, Fills: fills,
+		})
+	}
+	return out, nil
+}
+
 func (s *server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	s.cors(w, r)
 	if r.Method == http.MethodOptions {
@@ -913,6 +1169,10 @@ func (s *server) routes() http.Handler {
 	mux.HandleFunc("/api/events", s.handleEvents)
 	mux.HandleFunc("/api/spreads", s.handleSpreads)
 	mux.HandleFunc("/api/inventory", s.handleInventory)
+	mux.HandleFunc("/api/orders", s.handleOrders)
+	mux.HandleFunc("/api/funding-rate", s.handleFundingRate)
+	mux.HandleFunc("/api/calibration", s.handleCalibration)
+	mux.HandleFunc("/api/calibration/run", s.handleCalibrationRun)
 	mux.HandleFunc("/api/v5/status", s.handleStatus)
 	mux.HandleFunc("/ws", s.handleWS)
 	// TODO(phase 7): auth.

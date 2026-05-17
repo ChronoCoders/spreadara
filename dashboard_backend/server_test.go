@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -43,6 +45,12 @@ func (s *stubReader) spreadHistory(limit int) ([]SpreadPoint, error) {
 }
 func (s *stubReader) inventoryHistory(limit int) ([]InventoryPoint, error) {
 	return []InventoryPoint{{TsNs: 1, Inventory: 0.05, MidPrice: 78000.0}}, nil
+}
+func (s *stubReader) orderEvents(limit int) ([]SystemEvent, error) {
+	return []SystemEvent{
+		{TsNs: 2, Severity: "info", Source: "execution", Code: "SUBMITTED", Msg: "cid=1"},
+		{TsNs: 1, Severity: "info", Source: "okx_private_ws", Code: "FILLED", Msg: "cid=1"},
+	}, nil
 }
 
 func TestSnapshotHandler(t *testing.T) {
@@ -107,6 +115,157 @@ func TestInventoryHandler(t *testing.T) {
 	}
 	if len(got) != 1 || got[0].MidPrice != 78000.0 {
 		t.Fatalf("unexpected inventory: %+v", got)
+	}
+}
+
+func TestOrdersHandler(t *testing.T) {
+	stub := &stubReader{snap: Snapshot{OpenOrders: 3}}
+	srv := newServer(stub, 50*time.Millisecond, "")
+	ts := httptest.NewServer(srv.routes())
+	defer ts.Close()
+	resp, err := http.Get(ts.URL + "/api/orders?limit=10")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	var got OrdersPayload
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got.OpenCount != 3 || len(got.Events) != 2 {
+		t.Fatalf("unexpected orders payload: %+v", got)
+	}
+}
+
+func TestFundingRateCachesHit(t *testing.T) {
+	srv := newServer(&stubReader{}, 50*time.Millisecond, "")
+	calls := 0
+	srv.fundingFetcher = func(ctx context.Context) (FundingRate, error) {
+		calls++
+		return FundingRate{FundingRate: 0.0001, NextFundingTime: 1000, FundingRate8h: 0.0001}, nil
+	}
+	ts := httptest.NewServer(srv.routes())
+	defer ts.Close()
+	for i := 0; i < 3; i++ {
+		resp, err := http.Get(ts.URL + "/api/funding-rate")
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != 200 {
+			t.Fatalf("status = %d", resp.StatusCode)
+		}
+	}
+	if calls != 1 {
+		t.Fatalf("fetcher should be called once (cached), got %d", calls)
+	}
+}
+
+func TestFundingRateUpstreamError(t *testing.T) {
+	srv := newServer(&stubReader{}, 50*time.Millisecond, "")
+	srv.fundingFetcher = func(ctx context.Context) (FundingRate, error) {
+		return FundingRate{}, errors.New("dial: connection refused")
+	}
+	ts := httptest.NewServer(srv.routes())
+	defer ts.Close()
+	resp, err := http.Get(ts.URL + "/api/funding-rate")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502", resp.StatusCode)
+	}
+}
+
+func TestCalibrationCSVParse(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "calibration_top10.csv")
+	body := "gamma,k,horizon,sharpe,pnl,max_dd,fills\n" +
+		"0.10,1.50,1.00,2.45,123.45,0.0500,87\n" +
+		"0.15,1.80,1.50,1.90,98.10,0.0700,72\n"
+	if err := os.WriteFile(path, []byte(body), 0644); err != nil {
+		t.Fatal(err)
+	}
+	srv := newServer(&stubReader{}, 50*time.Millisecond, "")
+	srv.calibrationCsv = path
+	ts := httptest.NewServer(srv.routes())
+	defer ts.Close()
+	resp, err := http.Get(ts.URL + "/api/calibration")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	var got []CalibrationRow
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0].Gamma != 0.10 || got[0].Sharpe != 2.45 || got[0].Fills != 87 {
+		t.Fatalf("unexpected rows: %+v", got)
+	}
+}
+
+func TestCalibrationMissingFile(t *testing.T) {
+	srv := newServer(&stubReader{}, 50*time.Millisecond, "")
+	srv.calibrationCsv = filepath.Join(t.TempDir(), "does-not-exist.csv")
+	ts := httptest.NewServer(srv.routes())
+	defer ts.Close()
+	resp, err := http.Get(ts.URL + "/api/calibration")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	var got []CalibrationRow
+	_ = json.NewDecoder(resp.Body).Decode(&got)
+	if len(got) != 0 {
+		t.Fatalf("expected empty array, got %d rows", len(got))
+	}
+}
+
+func TestCalibrationRun(t *testing.T) {
+	srv := newServer(&stubReader{}, 50*time.Millisecond, "")
+	ran := 0
+	srv.calibrationRunner = func() error { ran++; return nil }
+	ts := httptest.NewServer(srv.routes())
+	defer ts.Close()
+	resp, err := http.Post(ts.URL+"/api/calibration/run", "application/json", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	var got map[string]string
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got["status"] != "started" || ran != 1 {
+		t.Fatalf("status=%v ran=%d", got, ran)
+	}
+}
+
+func TestCalibrationRunGetRejected(t *testing.T) {
+	srv := newServer(&stubReader{}, 50*time.Millisecond, "")
+	srv.calibrationRunner = func() error { return nil }
+	ts := httptest.NewServer(srv.routes())
+	defer ts.Close()
+	resp, err := http.Get(ts.URL + "/api/calibration/run")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusMethodNotAllowed {
+		t.Fatalf("status = %d, want 405", resp.StatusCode)
 	}
 }
 
