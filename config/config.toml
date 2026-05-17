@@ -79,7 +79,7 @@ quote_lifetime_ms = 5000
 quote_qty = 0.01
 
 [backtest]
-enabled = true
+enabled = false
 data_dir = "data/historical"
 replay_speed = 100
 start_date = "2026-01-01"
@@ -91,7 +91,7 @@ enable_calibration = false
 [testnet]
 # OKX testnet (paper trading): the REST endpoint is the prod URL with the
 # x-simulated-trading: 1 header (set automatically). WS has a dedicated URL.
-enabled = true
+enabled = false
 ws_base_url = "wss://wspap.okx.com:8443/ws/v5/public?brokerId=9999"
 rest_base_url = "https://www.okx.com"
 
