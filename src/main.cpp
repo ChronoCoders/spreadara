@@ -26,6 +26,7 @@
 #include "infra/logger.hpp"
 #include "infra/rdtsc.hpp"
 #include "market_data/okx_ws_client.hpp"
+#include "market_data/okx_private_ws_client.hpp"
 #include "market_data/ws_types.hpp"
 #include "market_data/tick_processor.hpp"
 #include "risk/circuit_breaker.hpp"
@@ -402,7 +403,18 @@ int main(int argc, char** argv) {
     // consumers are exchange-agnostic.
     auto okx_client = std::make_unique<spreadara::market_data::okx::OkxWsClient>(
         ioc, cfg, *ring, fatal_cb);
+
+    // Phase 9: private user-data WS. Real-time order/fill events feed the same
+    // FillEventRing as the local quote-thread, so PositionTracker accounting
+    // mirrors exchange truth. Disable via [market_data].private_ws_enabled.
+    std::unique_ptr<spreadara::market_data::okx::OkxPrivateWsClient> private_client;
+    if (cfg.market_data.private_ws_enabled) {
+        private_client = std::make_unique<spreadara::market_data::okx::OkxPrivateWsClient>(
+            ioc, cfg, creds, order_manager, fatal_cb);
+    }
+
     auto stop_clients = [&] {
+        if (private_client) private_client->stop();
         if (okx_client) okx_client->stop();
     };
 
@@ -410,14 +422,16 @@ int main(int argc, char** argv) {
     signals.async_wait([&](boost::system::error_code, int) {
         spdlog::info("signal_received shutting_down");
         g_shutdown.store(true);
-        // WHY: cancel live orders and (optionally) flatten BEFORE tearing
-        // down the WS / io_context so the REST client can still issue calls.
-        order_manager.shutdown_cancel_all();
+        // WHY: graceful only — post close to each WS strand and let ioc.run()
+        // drain. Post-join cleanup below issues shutdown_cancel_all on the
+        // main thread so signal / fatal_cb / natural-drain all converge on
+        // the same cancel path (prior version skipped cancel on fatal_cb,
+        // leaving live orders orphaned on the exchange).
         stop_clients();
-        ioc.stop();
     });
 
     okx_client->start();
+    if (private_client) private_client->start();
 
     std::thread ws_thread([&] {
         if (cfg.runtime.ws_cpu_core >= 0) {
@@ -427,6 +441,13 @@ int main(int argc, char** argv) {
     });
 
     ws_thread.join();
+
+    // WHY: unified shutdown — runs whether we exited via signal, fatal_cb
+    // (ioc.stop), or WS clients running out of work. Cancel live orders
+    // BEFORE stopping OrderManager so REST writes can still flush. Bounded
+    // by an internal wall-clock budget so a hung REST call can't block exit.
+    order_manager.shutdown_cancel_all();
+
     processor.stop();
     strat_running.store(false, std::memory_order_release);
     if (strat_thread.joinable()) strat_thread.join();

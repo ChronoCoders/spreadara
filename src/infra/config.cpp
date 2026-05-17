@@ -12,6 +12,8 @@ Config load_config(const std::string& path) {
     c.exchange.symbol = tbl["exchange"]["symbol"].value_or("");
     c.exchange.ws_base_url = tbl["exchange"]["ws_base_url"].value_or("");
     c.exchange.rest_base_url = tbl["exchange"]["rest_base_url"].value_or("");
+    c.exchange.private_ws_base_url = tbl["exchange"]["private_ws_base_url"].value_or(
+        "wss://ws.okx.com:8443/ws/v5/private");
     c.exchange.contract_size = tbl["exchange"]["contract_size"].value_or(0.0);
     c.exchange.tick_size = tbl["exchange"]["tick_size"].value_or(0.0);
     c.exchange.qty_step = tbl["exchange"]["qty_step"].value_or(0.0);
@@ -21,6 +23,7 @@ Config load_config(const std::string& path) {
     c.market_data.rest_depth_url = tbl["market_data"]["rest_depth_url"].value_or("");
     c.market_data.depth_levels = tbl["market_data"]["depth_levels"].value_or(20);
     c.market_data.volatility_window = tbl["market_data"]["volatility_window"].value_or(100);
+    c.market_data.private_ws_enabled = tbl["market_data"]["private_ws_enabled"].value_or(true);
 
     c.transport.ring_buffer_capacity =
         static_cast<std::size_t>(tbl["transport"]["ring_buffer_capacity"].value_or<int64_t>(65536));
@@ -45,6 +48,7 @@ Config load_config(const std::string& path) {
     c.runtime.strategy_cpu_core = tbl["runtime"]["strategy_cpu_core"].value_or(-1);
     c.runtime.risk_cpu_core = tbl["runtime"]["risk_cpu_core"].value_or(-1);
     c.runtime.execution_cpu_core = tbl["runtime"]["execution_cpu_core"].value_or(-1);
+    c.runtime.private_ws_cpu_core = tbl["runtime"]["private_ws_cpu_core"].value_or(-1);
 
     c.execution.rest_base_url = tbl["execution"]["rest_base_url"].value_or("");
     c.execution.recv_window_ms = tbl["execution"]["recv_window_ms"].value_or(5000);
@@ -95,6 +99,8 @@ Config load_config(const std::string& path) {
     c.testnet.enabled = tbl["testnet"]["enabled"].value_or(false);
     c.testnet.ws_base_url = tbl["testnet"]["ws_base_url"].value_or("");
     c.testnet.rest_base_url = tbl["testnet"]["rest_base_url"].value_or("");
+    c.testnet.private_ws_base_url = tbl["testnet"]["private_ws_base_url"].value_or(
+        "wss://wspap.okx.com:8443/ws/v5/private?brokerId=9999");
 
     c.risk.max_position = tbl["risk"]["max_position"].value_or(0.1);
     c.risk.max_order_size = tbl["risk"]["max_order_size"].value_or(0.05);

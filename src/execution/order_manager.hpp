@@ -104,6 +104,12 @@ public:
     // Phase 4: public so tests / mocks can inject synthetic fills.
     bool inject_fill(const risk::FillInput& f);
 
+    // Phase 9: external producers (OkxPrivateWsClient) call this to push a
+    // parsed FillInput onto the same ring the local quote-thread feeds. Goes
+    // through the same FlatBuffer-encode + slot-bookkeeping path as
+    // inject_fill so the consumer thread is unchanged.
+    bool push_external_fill(const risk::FillInput& f) { return inject_fill(f); }
+
     // Reconciliation entry point.
     void reconcile_now();
 

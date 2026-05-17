@@ -4,6 +4,7 @@
 #include <array>
 #include <chrono>
 #include <cstring>
+#include <deque>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -164,32 +165,42 @@ private:
         do_read();
     }
 
+    // WHY: Beast disallows concurrent async_write on the same stream. All
+    // outbound frames go through this queue so a ping landing during the
+    // subscribe-write window can't overlap. Drained on the strand by a
+    // chained callback. send_subscriptions and send_pong only enqueue.
+    void enqueue_write(std::shared_ptr<std::string> msg) {
+        write_queue_.push_back(std::move(msg));
+        if (!writing_) drain_write_queue();
+    }
+
+    void drain_write_queue() {
+        if (write_queue_.empty()) { writing_ = false; return; }
+        writing_ = true;
+        auto msg = write_queue_.front();
+        ws_->async_write(asio::buffer(*msg),
+            [self = shared_from_this(), msg](boost::system::error_code wec, std::size_t) {
+                if (wec) spdlog::warn("okx_write_fail err={}", wec.message());
+                if (!self->write_queue_.empty()) self->write_queue_.pop_front();
+                self->drain_write_queue();
+            });
+    }
+
     void send_subscriptions() {
-        // WHY: send all three subscriptions in ONE message. Beast disallows
-        // concurrent async_write on the same stream; multi-arg subscribe
-        // avoids the queueing problem entirely.
+        // Multi-arg subscribe still preferred (one round-trip), but the queue
+        // also covers correctness if a future caller splits this.
         std::string msg =
             std::string("{\"op\":\"subscribe\",\"args\":[")
             + "{\"channel\":\"tickers\",\"instId\":\"" + symbol_ + "\"},"
             + "{\"channel\":\"books5\",\"instId\":\"" + symbol_ + "\"},"
             + "{\"channel\":\"trades\",\"instId\":\"" + symbol_ + "\"}"
             + "]}";
-        auto buf = std::make_shared<std::string>(std::move(msg));
-        ws_->async_write(asio::buffer(*buf),
-            [self = shared_from_this(), buf](boost::system::error_code wec, std::size_t) {
-                if (wec) spdlog::warn("okx_subscribe_fail err={}", wec.message());
-            });
+        enqueue_write(std::make_shared<std::string>(std::move(msg)));
     }
 
     void send_pong() {
-        // WHY: OKX /ws/v5/public expects the literal 4-byte text frame "pong",
-        // NOT JSON. The earlier {"event":"pong"} form was silently dropped by
-        // the server and the 30 s idle timeout fired every cycle.
-        auto buf = std::make_shared<std::string>("pong");
-        ws_->async_write(asio::buffer(*buf),
-            [self = shared_from_this(), buf](boost::system::error_code wec, std::size_t) {
-                if (wec) spdlog::warn("okx_pong_fail err={}", wec.message());
-            });
+        // OKX /ws/v5/public expects the literal 4-byte text frame "pong".
+        enqueue_write(std::make_shared<std::string>("pong"));
     }
 
     void do_read() {
@@ -387,6 +398,10 @@ private:
     int attempt_{0};
     int backoff_ms_;
     std::atomic<bool> stopping_{false};
+    // Strand-confined; only touched from on_read / on_ws_handshake / write
+    // completion handlers, all of which run on strand_.
+    std::deque<std::shared_ptr<std::string>> write_queue_;
+    bool writing_{false};
 };
 
 OkxWsClient::OkxWsClient(asio::io_context& ioc, const infra::Config& cfg,

@@ -1,6 +1,7 @@
 #include "execution/order_manager.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -450,14 +451,49 @@ void OrderManager::on_halt() {
 
 void OrderManager::shutdown_cancel_all() {
     // WHY: safe to call before start() — slots default to inactive/NEW and
-    // the helper is a pure cancel/flatten over slot state. Shutdown is NOT a
+    // the body is a pure cancel/flatten over slot state. Shutdown is NOT a
     // fault; we don't call cb_.notify_exception here.
+    //
+    // Wall-clock budget: bounds total time spent in REST so a hung exchange
+    // can't block process exit. on_halt() still uses cancel_and_flatten_locked
+    // without a budget (operator-initiated halt can wait); shutdown can't.
+    using clock = std::chrono::steady_clock;
+    const auto deadline = clock::now() + std::chrono::milliseconds(5000);
+
     std::lock_guard<std::mutex> lk(mu_);
     int cancelled = 0;
+    int skipped_budget = 0;
+    for (int i = 0; i < 2; ++i) {
+        auto& s = slots_[i];
+        if (!(s.active && s.state != OrderState::CANCELED &&
+              s.state != OrderState::FILLED && s.state != OrderState::REJECTED)) {
+            continue;
+        }
+        if (clock::now() >= deadline) {
+            ++skipped_budget;
+            spdlog::warn("shutdown_cancel_budget_exhausted cid={}",
+                         s.client_order_id);
+            continue;
+        }
+        if (cancel_slot(i)) ++cancelled;
+    }
     bool flattened = false;
-    cancel_and_flatten_locked(cancelled, flattened);
-    spdlog::info("shutdown_cancel_all_complete cancelled={} flattened={}",
-                 cancelled, flattened);
+    const double inv = pt_.current_inventory();
+    if (std::fabs(inv) > cfg_.execution.flatten_threshold) {
+        if (clock::now() < deadline) {
+            const char* side = inv > 0 ? "SELL" : "BUY";
+            const double qty = std::fabs(inv);
+            spdlog::critical("flatten_market_order side={} qty={:.8f}", side, qty);
+            rm_.record_submission();
+            const auto a = rest_.place_market_order(side, qty, make_cid());
+            flattened = a.ok;
+        } else {
+            ++skipped_budget;
+            spdlog::warn("shutdown_flatten_budget_exhausted inv={:.8f}", inv);
+        }
+    }
+    spdlog::info("shutdown_cancel_all_complete cancelled={} flattened={} skipped_budget={}",
+                 cancelled, flattened, skipped_budget);
 }
 
 void OrderManager::halt_watcher_loop() {

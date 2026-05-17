@@ -15,6 +15,7 @@ struct Config {
         std::string symbol;
         std::string ws_base_url;
         std::string rest_base_url;
+        std::string private_ws_base_url;  // Phase 9: OKX private user-data WS
         double contract_size{0.0};   // BTC per 1 contract (OKX only; 0 = N/A)
         double tick_size{0.0};
         double qty_step{0.0};
@@ -26,6 +27,7 @@ struct Config {
         std::string rest_depth_url;
         int depth_levels;
         int volatility_window;
+        bool private_ws_enabled{true};  // Phase 9
     } market_data;
 
     struct {
@@ -50,6 +52,7 @@ struct Config {
         int strategy_cpu_core;
         int risk_cpu_core;
         int execution_cpu_core;
+        int private_ws_cpu_core;  // Phase 9
     } runtime;
 
     struct {
@@ -109,6 +112,7 @@ struct Config {
         bool enabled;
         std::string ws_base_url;
         std::string rest_base_url;
+        std::string private_ws_base_url;  // Phase 9
     } testnet;
 
     struct {

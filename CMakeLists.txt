@@ -99,6 +99,7 @@ set(LIB_SOURCES
     src/market_data/orderbook.cpp
     src/market_data/depth_snapshot.cpp
     src/market_data/okx_ws_client.cpp
+    src/market_data/okx_private_ws_client.cpp
     src/market_data/tick_processor.cpp
     src/strategy/inventory_manager.cpp
     src/strategy/signal_aggregator.cpp
@@ -203,6 +204,12 @@ if(BUILD_TESTS)
     add_test(NAME test_integration
              COMMAND test_integration
              WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+
+    # Phase 9: OKX private user-data WS parser unit tests. No network — drives
+    # the detail::parse_orders_fill helper with a known JSON fixture.
+    add_executable(test_private_ws tests/test_private_ws.cpp)
+    target_link_libraries(test_private_ws PRIVATE spreadara_lib GTest::gtest GTest::gtest_main)
+    add_test(NAME test_private_ws COMMAND test_private_ws)
 endif()
 
 if(BUILD_BENCHMARKS)
