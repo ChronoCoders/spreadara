@@ -1,7 +1,10 @@
 // REST + WS client. Reconnect on disconnect with exponential backoff capped at 5s.
 
-const API_BASE = (import.meta as any).env?.VITE_API_BASE || 'http://localhost:8080';
-const WS_BASE = (import.meta as any).env?.VITE_WS_BASE || 'ws://localhost:8080';
+// Use ?? (not ||) so an explicitly-empty VITE_API_BASE/VITE_WS_BASE means
+// "same origin" (relative paths) in production rather than silently falling
+// back to a localhost dev URL.
+const API_BASE = (import.meta as any).env?.VITE_API_BASE ?? 'http://localhost:8080';
+const WS_BASE = (import.meta as any).env?.VITE_WS_BASE ?? 'ws://localhost:8080';
 
 export interface Snapshot {
   ts_ns: number;

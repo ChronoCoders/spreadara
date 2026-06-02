@@ -51,6 +51,10 @@ func main() {
 	port := envInt("SPREADARA_DASHBOARD_PORT", 8080)
 	intervalMs := envInt("SPREADARA_DASHBOARD_INTERVAL_MS", 500)
 	corsOrigin := envStr("SPREADARA_DASHBOARD_CORS_ORIGIN", "")
+	// WHY: bind to loopback by default so the dashboard backend is never
+	// directly reachable off-box; a fronting reverse proxy forwards to it.
+	// Overridable via env for setups that intentionally bind elsewhere.
+	host := envStr("SPREADARA_DASHBOARD_HOST", "127.0.0.1")
 
 	db, err := sql.Open("postgres", dsn)
 	if err != nil {
@@ -66,7 +70,7 @@ func main() {
 	srv := newServer(&sqlReader{db: db}, time.Duration(intervalMs)*time.Millisecond, corsOrigin)
 	mux := srv.routes()
 
-	addr := ":" + strconv.Itoa(port)
+	addr := host + ":" + strconv.Itoa(port)
 	log.Printf("dashboard_backend listening on %s interval_ms=%d", addr, intervalMs)
 	if err := http.ListenAndServe(addr, mux); err != nil {
 		log.Fatalf("ListenAndServe: %v", err)

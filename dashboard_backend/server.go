@@ -697,11 +697,29 @@ func runTradingBinary(args ...string) error {
 	cmd := exec.Command(bin, args...)
 	cmd.Dir = home
 	logPath := envStrLocal("SPREADARA_SPAWN_LOG", "/tmp/spreadara-spawn.log")
+	var logFile *os.File
 	if f, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644); err == nil {
 		cmd.Stdout = f
 		cmd.Stderr = f
+		logFile = f
 	}
-	return cmd.Start()
+	if err := cmd.Start(); err != nil {
+		if logFile != nil {
+			_ = logFile.Close()
+		}
+		return err
+	}
+	// WHY: reap the spawned child so it doesn't linger as a zombie once it
+	// exits — the dashboard never blocks on it, so Wait runs in its own
+	// goroutine. Closing the spawn-log fd here avoids leaking one descriptor
+	// per spawn.
+	go func() {
+		_ = cmd.Wait()
+		if logFile != nil {
+			_ = logFile.Close()
+		}
+	}()
+	return nil
 }
 
 func defaultCalibrationRunner() error {

@@ -12,6 +12,7 @@ dashboard_backend/dashboard_backend
 node_modules/
 dist/
 *.tsbuildinfo
+.env.local
 data/recorded/*.bin
 backtest_results.csv
 calibration_top10.csv
