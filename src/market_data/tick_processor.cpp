@@ -140,8 +140,8 @@ void TickProcessor::emit_snapshot(uint64_t exchange_ts_ms) {
         last_trade_qty_,
         vol_.stdev_log_returns());
     fbb.Finish(snap);
-    spdlog::info("snap mid={:.4f} spread_bps={:.4f} vol={:.6f} bytes={}",
-                 book_.mid(), book_.spread_bps(), vol_.stdev_log_returns(), fbb.GetSize());
+    spdlog::debug("snap mid={:.4f} spread_bps={:.4f} vol={:.6f} bytes={}",
+                  book_.mid(), book_.spread_bps(), vol_.stdev_log_returns(), fbb.GetSize());
 
     if (snap_ring_) {
         strategy::SnapshotMsg msg;

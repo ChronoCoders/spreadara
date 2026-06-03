@@ -58,6 +58,7 @@ PY
     fi
 else
     echo "SKIP okx_ws: neither websocat nor python websockets available"
+    echo "       install websocat:  sudo apt install websocat"
 fi
 
 # 4. Postgres connectivity.
@@ -65,7 +66,7 @@ fi
 # a full connection string) instead of as a psql argument, so the embedded
 # password is not exposed in `ps aux` / the process command line.
 if [[ -n "${SPREADARA_PG_DSN:-}" ]]; then
-    if [[ "$(PGDATABASE="${SPREADARA_PG_DSN}" psql -c 'SELECT 1' -t -A 2>/dev/null || echo '')" == "1" ]]; then
+    if [[ "$(psql "${SPREADARA_PG_DSN}" -c 'SELECT 1' -t -A 2>/dev/null || echo '')" == "1" ]]; then
         pass "postgres"
     else
         fail "postgres" "psql probe returned non-1"
