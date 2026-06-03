@@ -65,8 +65,8 @@ export default function Trades() {
                     <td colSpan={6}>no trades</td>
                   </tr>
                 ) : (
-                  filtered.map((t) => (
-                    <tr key={`${t.ts_ns}-${t.order_id}`}>
+                  filtered.map((t, i) => (
+                    <tr key={`${t.ts_ns}-${t.order_id}-${i}`}>
                       <td className="col-time">{fmtTimeNs(t.ts_ns)}</td>
                       <td className="col-side">
                         <Pill tone={t.side > 0 ? 'green' : 'red'}>{t.side > 0 ? 'BUY' : 'SELL'}</Pill>
