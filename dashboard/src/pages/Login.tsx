@@ -143,7 +143,6 @@ export default function Login() {
         <div style={styles.chart}>
           <CandlestickChart />
         </div>
-        <p style={styles.sub}>BTC-USDT-SWAP · Avellaneda–Stoikov · OKX</p>
       </div>
 
       {/* Right panel — login form */}
@@ -229,12 +228,6 @@ const styles: Record<string, React.CSSProperties> = {
     background: 'rgba(245,158,11,0.04)',
     border: '1px solid rgba(245,158,11,0.1)',
     borderRadius: '8px',
-  },
-  sub: {
-    marginTop: '16px',
-    color: 'rgba(255,255,255,0.25)',
-    fontSize: '11px',
-    letterSpacing: '0.05em',
   },
   right: {
     flex: '0 0 40%',
