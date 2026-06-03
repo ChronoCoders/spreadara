@@ -1,3 +1,6 @@
+// Copyright (c) 2026 ChronoCoders. All rights reserved.
+// Proprietary and confidential. Unauthorized copying or distribution is prohibited.
+
 #include "infra/cpu_affinity.hpp"
 
 #include <pthread.h>

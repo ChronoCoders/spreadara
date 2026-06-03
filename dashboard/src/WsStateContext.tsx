@@ -1,3 +1,6 @@
+// Copyright (c) 2026 ChronoCoders. All rights reserved.
+// Proprietary and confidential. Unauthorized copying or distribution is prohibited.
+
 import { createContext, useContext } from 'react';
 import type { WsState } from './api';
 

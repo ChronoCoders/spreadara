@@ -1,3 +1,6 @@
+// Copyright (c) 2026 ChronoCoders. All rights reserved.
+// Proprietary and confidential. Unauthorized copying or distribution is prohibited.
+
 #pragma once
 
 // WHY: Spec says "separate process" but the user chose the pinned-thread

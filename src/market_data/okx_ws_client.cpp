@@ -1,3 +1,6 @@
+// Copyright (c) 2026 ChronoCoders. All rights reserved.
+// Proprietary and confidential. Unauthorized copying or distribution is prohibited.
+
 #include "market_data/okx_ws_client.hpp"
 
 #include <algorithm>

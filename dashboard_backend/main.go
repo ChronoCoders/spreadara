@@ -1,3 +1,6 @@
+// Copyright (c) 2026 ChronoCoders. All rights reserved.
+// Proprietary and confidential. Unauthorized copying or distribution is prohibited.
+
 package main
 
 // WHY: Standalone Go sidecar reads only from Postgres. CGO_ENABLED=0,

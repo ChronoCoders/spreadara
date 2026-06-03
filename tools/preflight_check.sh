@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 ChronoCoders. All rights reserved.
+# Proprietary and confidential. Unauthorized copying or distribution is prohibited.
+
 # preflight_check.sh — verify the host is ready for `spreadara-deploy.sh`.
 # Exit 0 if all PASS, 1 otherwise. Never logs secrets.
 

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 ChronoCoders. All rights reserved.
+// Proprietary and confidential. Unauthorized copying or distribution is prohibited.
+
 import { useEffect, useMemo, useState } from 'react';
 import { api, type InventoryPoint, type Snapshot } from '../api';
 import { fmtTimeNs, plainMoney, priceFmt, qtyFmt, signedMoney } from './fmt';

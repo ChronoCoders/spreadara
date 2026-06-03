@@ -1,3 +1,6 @@
+// Copyright (c) 2026 ChronoCoders. All rights reserved.
+// Proprietary and confidential. Unauthorized copying or distribution is prohibited.
+
 // REST + WS client. Reconnect on disconnect with exponential backoff capped at 5s.
 
 // Use ?? (not ||) so an explicitly-empty VITE_API_BASE/VITE_WS_BASE means

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 ChronoCoders. All rights reserved.
+// Proprietary and confidential. Unauthorized copying or distribution is prohibited.
+
 import { useEffect, useState } from 'react';
 import { api, type BacktestRow } from '../api';
 import { plainMoney, signedMoney } from './fmt';

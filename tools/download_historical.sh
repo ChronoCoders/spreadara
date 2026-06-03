@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 ChronoCoders. All rights reserved.
+# Proprietary and confidential. Unauthorized copying or distribution is prohibited.
+
 # WHY: bulk-download Binance USDT-M futures bookTicker daily archives for the
 # symbol declared in config/config.toml. No hardcoded symbol — comes from cfg.
 set -euo pipefail

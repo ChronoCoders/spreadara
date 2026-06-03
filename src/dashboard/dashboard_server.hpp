@@ -1,3 +1,6 @@
+// Copyright (c) 2026 ChronoCoders. All rights reserved.
+// Proprietary and confidential. Unauthorized copying or distribution is prohibited.
+
 #pragma once
 
 // WHY: The HTTP/WebSocket dashboard server is implemented in

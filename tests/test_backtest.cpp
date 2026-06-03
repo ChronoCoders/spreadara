@@ -1,3 +1,6 @@
+// Copyright (c) 2026 ChronoCoders. All rights reserved.
+// Proprietary and confidential. Unauthorized copying or distribution is prohibited.
+
 // Unit tests for backtest building blocks. Hits the historical
 // loader, simulated rest client, and reporter; integration coverage lives in
 // test_integration.cpp.

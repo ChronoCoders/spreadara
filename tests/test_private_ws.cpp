@@ -1,3 +1,6 @@
+// Copyright (c) 2026 ChronoCoders. All rights reserved.
+// Proprietary and confidential. Unauthorized copying or distribution is prohibited.
+
 // OKX private user-data WS parser tests.
 //
 // No network. Drives the public `detail::` helpers in okx_private_ws_client

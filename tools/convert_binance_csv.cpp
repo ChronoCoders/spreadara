@@ -1,3 +1,6 @@
+// Copyright (c) 2026 ChronoCoders. All rights reserved.
+// Proprietary and confidential. Unauthorized copying or distribution is prohibited.
+
 // WHY: standalone converter — CSV → length-prefixed FB archive — used to
 // pre-process Binance bookTicker dumps once so backtest replay can stream
 // straight off disk without re-parsing every run.

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 ChronoCoders. All rights reserved.
+// Proprietary and confidential. Unauthorized copying or distribution is prohibited.
+
 // End-to-end integration test for the backtest pipeline. Wires:
 //   ReplayEngine -> SnapshotRing -> SignalAggregator -> MarketMaker
 //                -> OrderManager (single-threaded via test peer)
