@@ -59,25 +59,27 @@ export default function Config() {
         </div>
       </div>
 
-      <div
-        style={{
-          padding: '8px 16px',
-          background: 'var(--amber)',
-          color: 'var(--bg-base)',
-          fontFamily: 'var(--font-sans)',
-          fontSize: 11,
-          textTransform: 'uppercase',
-          letterSpacing: '0.08em',
-        }}
-      >
-        Warning: restart the trading binary for changes to take effect.
-      </div>
+      {status?.kind === 'ok' && !dirty && (
+        <div
+          style={{
+            padding: '8px 16px',
+            background: 'var(--amber)',
+            color: 'var(--bg-base)',
+            fontFamily: 'var(--font-sans)',
+            fontSize: 11,
+            textTransform: 'uppercase',
+            letterSpacing: '0.08em',
+          }}
+        >
+          Saved — restart the trading binary for changes to take effect.
+        </div>
+      )}
 
-      {status && (
+      {status?.kind === 'err' && (
         <div
           style={{
             padding: '6px 16px',
-            color: status.kind === 'ok' ? 'var(--green)' : 'var(--red)',
+            color: 'var(--red)',
             background: 'var(--bg-surface)',
             fontFamily: 'var(--font-mono)',
             fontSize: 11,
