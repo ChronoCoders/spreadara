@@ -48,16 +48,16 @@ type Snapshot struct {
 	MaxOpenOrders        int     `json:"max_open_orders"`
 	CurrentDrawdownPct   float64 `json:"current_drawdown_pct"`
 	MaxDrawdownPct       float64 `json:"max_drawdown_pct"`
-	BidQty              float64 `json:"bid_qty"`
-	AskQty              float64 `json:"ask_qty"`
-	Volatility          float64 `json:"volatility"`
-	Gamma               float64 `json:"gamma"`
-	K                   float64 `json:"k"`
-	T                   float64 `json:"t"`
-	LatP50Us            float64 `json:"lat_p50_us"`
-	LatP95Us            float64 `json:"lat_p95_us"`
-	LatP99Us            float64 `json:"lat_p99_us"`
-	MaxInventoryDisplay float64 `json:"max_inventory_display"`
+	BidQty               float64 `json:"bid_qty"`
+	AskQty               float64 `json:"ask_qty"`
+	Volatility           float64 `json:"volatility"`
+	Gamma                float64 `json:"gamma"`
+	K                    float64 `json:"k"`
+	T                    float64 `json:"t"`
+	LatP50Us             float64 `json:"lat_p50_us"`
+	LatP95Us             float64 `json:"lat_p95_us"`
+	LatP99Us             float64 `json:"lat_p99_us"`
+	MaxInventoryDisplay  float64 `json:"max_inventory_display"`
 	// Computed in the handler from the trades table, not stored in the snapshot:
 	FillCount10s int     `json:"fill_count_10s"`
 	FillCount60s int     `json:"fill_count_60s"`
@@ -131,15 +131,15 @@ type LogsResponse struct {
 }
 
 type BacktestRow struct {
-	RunTs                 string  `json:"run_ts"`
-	TotalPnl              float64 `json:"total_pnl"`
-	SharpeRatio           float64 `json:"sharpe_ratio"`
-	MaxDrawdownPct        float64 `json:"max_drawdown_pct"`
-	FillCount             int     `json:"fill_count"`
-	MakerRatio            float64 `json:"maker_ratio"`
-	AvgSpreadCapturedBps  float64 `json:"avg_spread_captured_bps"`
-	InitialCapital        float64 `json:"initial_capital"`
-	FinalEquity           float64 `json:"final_equity"`
+	RunTs                string  `json:"run_ts"`
+	TotalPnl             float64 `json:"total_pnl"`
+	SharpeRatio          float64 `json:"sharpe_ratio"`
+	MaxDrawdownPct       float64 `json:"max_drawdown_pct"`
+	FillCount            int     `json:"fill_count"`
+	MakerRatio           float64 `json:"maker_ratio"`
+	AvgSpreadCapturedBps float64 `json:"avg_spread_captured_bps"`
+	InitialCapital       float64 `json:"initial_capital"`
+	FinalEquity          float64 `json:"final_equity"`
 }
 
 type CalibrationRow struct {
@@ -288,7 +288,7 @@ func (r *sqlReader) fillStats() (int, int, float64, float64, error) {
 // "book not yet ready" snapshots, not real zero spreads). Returns 0 if no
 // usable rows in the window.
 func (r *sqlReader) avgSpreadBps60s() (float64, error) {
-	cutoff := time.Now().Add(-60*time.Second).UnixNano()
+	cutoff := time.Now().Add(-60 * time.Second).UnixNano()
 	var avg sql.NullFloat64
 	err := r.db.QueryRow(
 		`SELECT AVG(spread_bps) FROM position_snapshots
@@ -345,7 +345,7 @@ func (r *sqlReader) dailyPnl() ([]DailyPnl, error) {
 // the last hour. The trading binary does not write a per-state flag, so we
 // derive it from system_events here.
 func (r *sqlReader) circuitHalted() (bool, error) {
-	cutoff := time.Now().Add(-1*time.Hour).UnixNano()
+	cutoff := time.Now().Add(-1 * time.Hour).UnixNano()
 	var n int
 	err := r.db.QueryRow(
 		`SELECT COUNT(*) FROM system_events
@@ -362,7 +362,7 @@ func (r *sqlReader) circuitHalted() (bool, error) {
 // drawdownPct = (peak_equity - current_equity)/peak_equity * 100 over 24h.
 // equity is approximated as realized + unrealized - fees from position_snapshots.
 func (r *sqlReader) drawdownPct() (float64, error) {
-	cutoff := time.Now().Add(-24*time.Hour).UnixNano()
+	cutoff := time.Now().Add(-24 * time.Hour).UnixNano()
 	rows, err := r.db.Query(
 		`SELECT realized_pnl + unrealized_pnl - total_fees AS equity
 		 FROM position_snapshots WHERE ts_ns >= $1 ORDER BY ts_ns ASC`, cutoff)
@@ -394,7 +394,7 @@ func (r *sqlReader) drawdownPct() (float64, error) {
 // 30s — the only liveness proxy available until the trading binary writes
 // per-stream health rows.
 func (r *sqlReader) wsStreamsUp() (bool, error) {
-	cutoff := time.Now().Add(-30*time.Second).UnixNano()
+	cutoff := time.Now().Add(-30 * time.Second).UnixNano()
 	var n int
 	err := r.db.QueryRow(
 		`SELECT COUNT(*) FROM position_snapshots WHERE ts_ns >= $1`, cutoff,
@@ -510,11 +510,11 @@ type server struct {
 	calibrationCsv    string
 	calibrationRunner func() error
 
-	fundingMu   sync.Mutex
-	fundingAt   time.Time
-	fundingVal  FundingRate
-	fundingErr  error
-	fundingTTL  time.Duration
+	fundingMu  sync.Mutex
+	fundingAt  time.Time
+	fundingVal FundingRate
+	fundingErr error
+	fundingTTL time.Duration
 
 	// v0.12 additions: alert rules persisted to JSON, log tailing, config
 	// read/write. All paths are env-overridable so the tests don't touch
@@ -623,7 +623,7 @@ func readBacktestCSV(path string) ([]BacktestRow, error) {
 		init, _ := strconv.ParseFloat(get(row, "initial_capital"), 64)
 		final, _ := strconv.ParseFloat(get(row, "final_equity"), 64)
 		out = append(out, BacktestRow{
-			RunTs: runTs,
+			RunTs:    runTs,
 			TotalPnl: pnl, SharpeRatio: sharpe, MaxDrawdownPct: dd,
 			FillCount: fills, MakerRatio: maker, AvgSpreadCapturedBps: spread,
 			InitialCapital: init, FinalEquity: final,

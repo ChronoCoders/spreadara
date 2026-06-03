@@ -26,8 +26,8 @@ type statusStub struct {
 	pingErr error
 }
 
-func (s *statusStub) lastSnapshotTs() (int64, error)         { return s.ts, s.tsErr }
-func (s *statusStub) dbPing(_ context.Context) error          { return s.pingErr }
+func (s *statusStub) lastSnapshotTs() (int64, error) { return s.ts, s.tsErr }
+func (s *statusStub) dbPing(_ context.Context) error { return s.pingErr }
 
 type stubReader struct {
 	snap Snapshot

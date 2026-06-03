@@ -191,12 +191,12 @@ func defaultAlertFirer(rule AlertRule, snap Snapshot) {
 		return
 	}
 	body := map[string]interface{}{
-		"rule_id":     rule.ID,
-		"rule_name":   rule.Name,
-		"type":        rule.Type,
-		"threshold":   rule.Threshold,
-		"fired_at":    time.Now().UTC().Format(time.RFC3339Nano),
-		"snapshot":    snap,
+		"rule_id":   rule.ID,
+		"rule_name": rule.Name,
+		"type":      rule.Type,
+		"threshold": rule.Threshold,
+		"fired_at":  time.Now().UTC().Format(time.RFC3339Nano),
+		"snapshot":  snap,
 	}
 	b, err := json.Marshal(body)
 	if err != nil {
