@@ -13,6 +13,11 @@ import {
 } from 'recharts';
 import { api, type InventoryPoint, type Snapshot } from '../api';
 import { bpsFmt, COLORS, fmtTimeNs, priceFmt, qtyFmt } from './fmt';
+import {
+  StaleBanner,
+  STALE_OPACITY,
+  useFreshness,
+} from '../components/freshness';
 
 interface ExtSnap extends Snapshot {
   bid_price?: number;
@@ -25,16 +30,23 @@ interface ExtSnap extends Snapshot {
 export default function MarketData() {
   const [snap, setSnap] = useState<ExtSnap | null>(null);
   const [points, setPoints] = useState<InventoryPoint[]>([]);
+  const { stale, markSuccess, markError } = useFreshness();
 
   useEffect(() => {
     const fetch = () => {
-      api.snapshot().then((s) => setSnap(s as ExtSnap)).catch(() => {});
-      api.inventory(200).then(setPoints).catch(() => {});
+      api
+        .snapshot()
+        .then((s) => {
+          setSnap(s as ExtSnap);
+          markSuccess();
+        })
+        .catch(() => markError());
+      api.inventory(200).then(setPoints).catch(() => markError());
     };
     fetch();
     const id = setInterval(fetch, 2000);
     return () => clearInterval(id);
-  }, []);
+  }, [markSuccess, markError]);
 
   const series = useMemo(
     () =>
@@ -55,7 +67,9 @@ export default function MarketData() {
         <h1 className="page-title">Market Data</h1>
       </div>
 
-      <div className="section">
+      <StaleBanner show={stale} />
+
+      <div className="section" style={{ opacity: stale ? STALE_OPACITY : 1 }}>
         <div className="row-4">
           <Card label="Bid" value={fmtPrice(bid)} sub={`${fmtQty(snap?.bid_qty)} BTC`} tone="green" />
           <Card label="Ask" value={fmtPrice(ask)} sub={`${fmtQty(snap?.ask_qty)} BTC`} tone="red" />
@@ -64,7 +78,7 @@ export default function MarketData() {
         </div>
       </div>
 
-      <div className="section">
+      <div className="section" style={{ opacity: stale ? STALE_OPACITY : 1 }}>
         <div className="panel">
           <div className="panel-header"><span>BID / ASK GAP</span></div>
           <div style={{ padding: 24, background: 'var(--bg-surface)' }}>
@@ -73,7 +87,7 @@ export default function MarketData() {
         </div>
       </div>
 
-      <div className="section" style={{ flex: 1 }}>
+      <div className="section" style={{ flex: 1, opacity: stale ? STALE_OPACITY : 1 }}>
         <div className="panel">
           <div className="panel-header"><span>MID TREND</span></div>
           <div className="chart-body">

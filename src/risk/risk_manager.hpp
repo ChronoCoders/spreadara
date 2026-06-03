@@ -26,6 +26,9 @@ enum class RiskResult {
     REJECTED_OPEN_ORDERS,
 };
 
+// Short stable label for a RiskResult, for structured rejection logging.
+const char* to_str(RiskResult r);
+
 class RiskManager {
 public:
     RiskManager(const infra::Config& cfg, PositionTracker& pt);

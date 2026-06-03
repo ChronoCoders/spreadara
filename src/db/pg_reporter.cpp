@@ -99,6 +99,11 @@ PgReporter::~PgReporter() {
 }
 
 bool PgReporter::push(const DbEvent& e) {
+    // CRITICAL: DbEventRing is single-producer by contract, but push() is
+    // called concurrently from the snapshot, strategy, fill, circuit-breaker
+    // and reconcile threads. Serialize the producer side so the ring's head
+    // advance stays a single-writer operation (effectively MPSC).
+    std::lock_guard<std::mutex> lk(push_mu_);
     return ring_.push(e);
 }
 

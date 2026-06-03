@@ -4,20 +4,34 @@
 import { useEffect, useMemo, useState } from 'react';
 import { api, type InventoryPoint, type Snapshot } from '../api';
 import { fmtTimeNs, plainMoney, priceFmt, qtyFmt, signedMoney } from './fmt';
+import {
+  StaleBanner,
+  STALE_OPACITY,
+  useFreshness,
+} from '../components/freshness';
 
 export default function Positions() {
   const [snap, setSnap] = useState<Snapshot | null>(null);
   const [history, setHistory] = useState<InventoryPoint[]>([]);
+  const { stale, markSuccess, markError } = useFreshness();
 
   useEffect(() => {
     const fetch = () => {
-      api.snapshot().then(setSnap).catch(() => {});
-      api.inventory(100).then(setHistory).catch(() => {});
+      // Treat the snapshot fetch as the freshness signal for this page; the
+      // inventory history is supplementary.
+      api
+        .snapshot()
+        .then((s) => {
+          setSnap(s);
+          markSuccess();
+        })
+        .catch(() => markError());
+      api.inventory(100).then(setHistory).catch(() => markError());
     };
     fetch();
     const id = setInterval(fetch, 2000);
     return () => clearInterval(id);
-  }, []);
+  }, [markSuccess, markError]);
 
   // Show only entries where inventory changed vs the previous sample.
   const changes = useMemo(() => {
@@ -47,7 +61,9 @@ export default function Positions() {
         <h1 className="page-title">Positions</h1>
       </div>
 
-      <div className="section">
+      <StaleBanner show={stale} />
+
+      <div className="section" style={{ opacity: stale ? STALE_OPACITY : 1 }}>
         <div className="row-4">
           <div className="metric">
             <div className="metric-label">Direction</div>
@@ -75,7 +91,7 @@ export default function Positions() {
         </div>
       </div>
 
-      <div className="section" style={{ flex: 1 }}>
+      <div className="section" style={{ flex: 1, opacity: stale ? STALE_OPACITY : 1 }}>
         <div className="panel">
           <div className="panel-header">
             <span>RECENT POSITION CHANGES</span>

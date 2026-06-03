@@ -4,6 +4,11 @@
 import { useEffect, useState } from 'react';
 import { api, type Snapshot } from '../api';
 import { bpsFmt } from './fmt';
+import {
+  StaleBanner,
+  STALE_OPACITY,
+  useFreshness,
+} from '../components/freshness';
 
 interface ExtSnap extends Snapshot {
   spread_bps?: number;
@@ -12,13 +17,21 @@ interface ExtSnap extends Snapshot {
 
 export default function Strategy() {
   const [snap, setSnap] = useState<ExtSnap | null>(null);
+  const { stale, markSuccess, markError } = useFreshness();
 
   useEffect(() => {
-    const fetch = () => api.snapshot().then((s) => setSnap(s as ExtSnap)).catch(() => {});
+    const fetch = () =>
+      api
+        .snapshot()
+        .then((s) => {
+          setSnap(s as ExtSnap);
+          markSuccess();
+        })
+        .catch(() => markError());
     fetch();
     const id = setInterval(fetch, 2000);
     return () => clearInterval(id);
-  }, []);
+  }, [markSuccess, markError]);
 
   const gamma = snap?.gamma;
   const k = snap?.k;
@@ -33,7 +46,9 @@ export default function Strategy() {
         <h1 className="page-title">Strategy — Avellaneda–Stoikov</h1>
       </div>
 
-      <div className="section">
+      <StaleBanner show={stale} />
+
+      <div className="section" style={{ opacity: stale ? STALE_OPACITY : 1 }}>
         <div className="row-4">
           <ParamCard label="γ (gamma)" value={gamma} digits={4} />
           <ParamCard label="k" value={k} digits={3} />
@@ -42,7 +57,7 @@ export default function Strategy() {
         </div>
       </div>
 
-      <div className="section">
+      <div className="section" style={{ opacity: stale ? STALE_OPACITY : 1 }}>
         <div className="row-2">
           <div className="metric">
             <div className="metric-label">Current Spread</div>
@@ -58,7 +73,7 @@ export default function Strategy() {
         </div>
       </div>
 
-      <div className="section" style={{ flex: 1 }}>
+      <div className="section" style={{ flex: 1, opacity: stale ? STALE_OPACITY : 1 }}>
         <div className="panel">
           <div className="panel-header"><span>PARAMETER REFERENCE</span></div>
           <div style={{ padding: 16, fontFamily: 'var(--font-sans)', fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.6 }}>

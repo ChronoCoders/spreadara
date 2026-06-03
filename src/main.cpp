@@ -316,6 +316,57 @@ int main(int argc, char** argv) {
                                                      risk_mgr, circuit_breaker,
                                                      quote_ring.get());
     order_manager.set_reporter(&reporter);
+
+    // CRITICAL: startup preflight. A prior process that was SIGKILLed or crashed
+    // can leave resting orders or an open position that the fresh local slots
+    // know nothing about. Cancel every open order and flatten any residual
+    // position BEFORE quoting so we never quote on top of orphaned exchange
+    // state. A query failure (network/auth) is fatal — we must not trade blind.
+    {
+        const auto oo = rest_iface->query_open_orders();
+        if (!oo.ok) {
+            spdlog::critical("preflight_query_open_orders_failed http={}", oo.http_code);
+            return 1;
+        }
+        spdlog::info("preflight_open_orders count={}", oo.orders.size());
+        for (const auto& o : oo.orders) {
+            const auto c = rest_iface->cancel_order(o.client_order_id, o.exchange_order_id);
+            const bool gone = c.ok || c.exchange_code == 51400 || c.exchange_code == -2011;
+            if (!gone) {
+                spdlog::critical("preflight_cancel_failed cid={} http={} exchange_code={}",
+                                 o.client_order_id, c.http_code, c.exchange_code);
+                return 1;
+            }
+            spdlog::info("preflight_cancelled cid={} exchange_code={}",
+                         o.client_order_id, c.exchange_code);
+        }
+
+        const auto ps = rest_iface->query_positions();
+        if (!ps.ok) {
+            spdlog::critical("preflight_query_positions_failed http={}", ps.http_code);
+            return 1;
+        }
+        double net = 0.0;
+        for (const auto& p : ps.positions) net += p.position_amt;
+        const double thr = cfg.execution.flatten_threshold;
+        if (net > thr || net < -thr) {
+            const char* side = (net > 0.0) ? "SELL" : "BUY";
+            const double qty = (net > 0.0) ? net : -net;
+            const std::string cid = "sprpf" + std::to_string(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now().time_since_epoch()).count());
+            const auto a = rest_iface->place_market_order(side, qty, cid);
+            if (!a.ok) {
+                spdlog::critical("preflight_flatten_failed side={} qty={:.8f} http={} exchange_code={}",
+                                 side, qty, a.http_code, a.exchange_code);
+                return 1;
+            }
+            spdlog::critical("preflight_flattened side={} qty={:.8f}", side, qty);
+        } else {
+            spdlog::info("preflight_position_flat net={:.8f}", net);
+        }
+    }
+
     order_manager.start();
 
     // Periodic position-snapshot + daily-pnl pusher. ~1 Hz.
@@ -463,11 +514,17 @@ int main(int argc, char** argv) {
     // (ioc.stop), or WS clients running out of work. Cancel live orders
     // BEFORE stopping OrderManager so REST writes can still flush. Bounded
     // by an internal wall-clock budget so a hung REST call can't block exit.
+    //
+    // CRITICAL: stop the quote producer (strategy thread) and join it FIRST. If
+    // cancel/flatten runs while the strategy is still producing, a queued quote
+    // can be placed right after we flatten, orphaning a live order. Producers
+    // must be fully stopped before we cancel.
+    strat_running.store(false, std::memory_order_release);
+    if (strat_thread.joinable()) strat_thread.join();
+
     order_manager.shutdown_cancel_all();
 
     processor.stop();
-    strat_running.store(false, std::memory_order_release);
-    if (strat_thread.joinable()) strat_thread.join();
     snap_running.store(false, std::memory_order_release);
     if (snap_thread.joinable()) snap_thread.join();
     order_manager.stop();

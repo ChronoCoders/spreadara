@@ -208,6 +208,16 @@ bool OkxRestClient::process_status(long http_code, const std::string& body,
                                    int& exchange_code_out) {
     exchange_code_out = 0;
     if (http_code < 200 || http_code >= 300) {
+        // HTTP 451 ("Unavailable For Legal Reasons") is OKX's geo-block at the
+        // transport layer (the app-level equivalent is code 50114). Surface it
+        // distinctly and trip the breaker — trading from a blocked region must
+        // halt, not retry.
+        if (http_code == 451) {
+            exchange_code_out = 451;
+            spdlog::critical("rest_geoblocked stage=geoblock http=451 endpoint={}", endpoint);
+            if (cb_) cb_->notify_exception("rest_geoblocked");
+            return false;
+        }
         if (http_code != 0) {
             spdlog::warn("okx_rest_fail stage=http http={} endpoint={}",
                          http_code, endpoint);

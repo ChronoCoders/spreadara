@@ -61,15 +61,17 @@ public:
     static std::string prehash(const std::string& ts, const std::string& method,
                                const std::string& path, const std::string& body);
 
+    // Returns true on code=="0"; logs / triggers CB on geoblock (HTTP 451 /
+    // app code 50114) and surfaces the per-item sCode in exchange_code_out.
+    // Exposed for tests.
+    bool process_status(long http_code, const std::string& body,
+                        const std::string& endpoint, int& exchange_code_out);
+
 private:
     struct SignedResp { bool ok{false}; long http_code{0}; std::string body; };
 
     SignedResp signed_request(CURL* handle, const std::string& method,
                               const std::string& path, const std::string& body);
-
-    // Returns true on code=="0"; logs / triggers CB on geoblock (50114).
-    bool process_status(long http_code, const std::string& body,
-                        const std::string& endpoint, int& exchange_code_out);
 
     const infra::Config& cfg_;
     const Credentials& creds_;

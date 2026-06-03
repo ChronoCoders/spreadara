@@ -4,8 +4,11 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <fstream>
 #include <string>
 #include <thread>
+
+#include <unistd.h>
 
 #include <gtest/gtest.h>
 #include <openssl/hmac.h>
@@ -13,6 +16,7 @@
 
 #include "db/pg_reporter.hpp"
 #include "execution/i_rest_client.hpp"
+#include "execution/okx_rest_client.hpp"
 #include "execution/order_manager.hpp"
 #include "execution/simulated_rest_client.hpp"
 #include "infra/config.hpp"
@@ -293,4 +297,97 @@ TEST(Env, CredentialsPresent) {
     ::unsetenv("SPREADARA_API_SECRET");
     if (!sk.empty()) ::setenv("SPREADARA_API_KEY", sk.c_str(), 1);
     if (!ss.empty()) ::setenv("SPREADARA_API_SECRET", ss.c_str(), 1);
+}
+
+// ---- CRITICAL 8: OKX REST signer + status parsing + config-load coverage ----
+
+TEST(OkxSign, HmacSha256Base64KnownVector) {
+    // Reference computed independently via the OpenSSL CLI:
+    //   printf %s "<msg>" | openssl dgst -sha256 -hmac "<secret>" -binary | base64
+    const std::string secret = "spreadara-test-secret";
+    const std::string msg = "2026-05-16T16:05:00.123ZPOST/api/v5/trade/order{}";
+    const std::string expected = "ZsN0pqd3UXdmlrnd/K+H/VxHtAj6tRyZ9qjJK9yk01o=";
+    EXPECT_EQ(execution::okx::OkxRestClient::hmac_sha256_b64(secret, msg), expected);
+}
+
+TEST(OkxSign, PrehashConcatenatesAndUppercasesMethod) {
+    const std::string ph = execution::okx::OkxRestClient::prehash(
+        "2026-05-16T16:05:00.123Z", "post", "/api/v5/trade/order", "{}");
+    EXPECT_EQ(ph, "2026-05-16T16:05:00.123ZPOST/api/v5/trade/order{}");
+    // GET has an empty body, so the prehash ends at the path.
+    EXPECT_EQ(execution::okx::OkxRestClient::prehash("T", "get", "/p", ""), "TGET/p");
+}
+
+TEST(OkxStatus, SuccessCodeZeroItemZero) {
+    const auto cfg = make_cfg();
+    const execution::Credentials creds{};
+    execution::okx::OkxRestClient rc(cfg, creds, nullptr);
+    const std::string body =
+        R"({"code":"0","msg":"","data":[{"sCode":"0","sMsg":"","ordId":"123","clOrdId":"abc"}]})";
+    int ec = -1;
+    EXPECT_TRUE(rc.process_status(200, body, "/api/v5/trade/order", ec));
+    EXPECT_EQ(ec, 0);
+}
+
+TEST(OkxStatus, ItemSCode51400Surfaced) {
+    const auto cfg = make_cfg();
+    const execution::Credentials creds{};
+    execution::okx::OkxRestClient rc(cfg, creds, nullptr);
+    const std::string body =
+        R"({"code":"1","msg":"All operations failed",)"
+        R"("data":[{"sCode":"51400","sMsg":"order does not exist","clOrdId":"abc"}]})";
+    int ec = 0;
+    EXPECT_FALSE(rc.process_status(200, body, "/api/v5/trade/cancel-order", ec));
+    EXPECT_EQ(ec, 51400);
+}
+
+TEST(OkxStatus, Http451GeoBlockDetected) {
+    const auto cfg = make_cfg();
+    const execution::Credentials creds{};
+    execution::okx::OkxRestClient rc(cfg, creds, nullptr);
+    int ec = 0;
+    EXPECT_FALSE(rc.process_status(451, "", "/api/v5/account/balance", ec));
+    EXPECT_EQ(ec, 451);  // distinct from a generic http failure (which leaves ec=0)
+}
+
+namespace {
+std::string write_temp_toml(const std::string& contents) {
+    static int seq = 0;
+    const std::string path = "/tmp/spreadara_cfg_test_" +
+                             std::to_string(::getpid()) + "_" +
+                             std::to_string(++seq) + ".toml";
+    std::ofstream(path) << contents;
+    return path;
+}
+}  // namespace
+
+TEST(ConfigLoad, ValidTomlPopulatesStruct) {
+    const std::string path = write_temp_toml(
+        "[exchange]\nname = \"okx\"\nsymbol = \"BTC-USDT-SWAP\"\n"
+        "[strategy]\ngamma = 0.2\n"
+        "[risk]\nmax_position = 0.3\n");
+    const auto cfg = infra::load_config(path);
+    EXPECT_EQ(cfg.exchange.name, "okx");
+    EXPECT_DOUBLE_EQ(cfg.strategy.gamma, 0.2);
+    EXPECT_DOUBLE_EQ(cfg.risk.max_position, 0.3);
+    std::remove(path.c_str());
+}
+
+TEST(ConfigLoad, MissingRiskSectionUsesDefaults) {
+    const std::string path = write_temp_toml("[strategy]\ngamma = 0.1\n");
+    const auto cfg = infra::load_config(path);
+    // No [risk] table → documented value_or defaults apply.
+    EXPECT_DOUBLE_EQ(cfg.risk.max_position, 0.1);
+    EXPECT_EQ(cfg.risk.max_open_orders, 10);
+    std::remove(path.c_str());
+}
+
+TEST(ConfigLoad, NegativeGammaLoadedNotValidated) {
+    // Documents current behavior: load_config performs NO range validation, so
+    // a negative gamma is accepted verbatim. A future validation pass should
+    // reject this — update this test to expect the rejection when it lands.
+    const std::string path = write_temp_toml("[strategy]\ngamma = -0.1\n");
+    const auto cfg = infra::load_config(path);
+    EXPECT_DOUBLE_EQ(cfg.strategy.gamma, -0.1);
+    std::remove(path.c_str());
 }

@@ -147,6 +147,9 @@ private:
 
     const infra::Config& cfg_;
     DbEventRing& ring_;
+    // Serializes concurrent push() callers so the SPSC ring keeps a single
+    // producer (see PgReporter::push).
+    std::mutex push_mu_;
     std::string dsn_;
     bool dry_;
 

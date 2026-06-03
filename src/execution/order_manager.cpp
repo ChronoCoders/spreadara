@@ -207,6 +207,32 @@ bool OrderManager::place_new(int slot_idx, double price, double qty) {
     // async-ACK path can read it back when the ACK arrives later.
     s.submit_cycles = infra::rdtsc_cycles();
     const char* side_str = (s.side > 0) ? "BUY" : "SELL";
+
+    // CRITICAL: re-check the breaker on the submit thread itself. The quote was
+    // vetted on the strategy thread; the breaker can trip during the queue hop
+    // or the preceding cancel REST round-trip held under mu_. Never put an order
+    // on the wire while halted.
+    if (cb_.halted()) {
+        spdlog::warn("place_skipped reason=cb_halted cid={} side={} price={:.8f} qty={:.8f}",
+                     s.client_order_id, side_str, price, qty);
+        transition(slot_idx, OrderState::REJECTED);
+        sync_open_orders();
+        return false;
+    }
+
+    // CRITICAL: enforce pre-trade risk on the submit thread, not just at quote
+    // emission. Inventory/equity/open-order state can move between emission and
+    // submit, so this is the authoritative gate before the REST write.
+    const double signed_qty = static_cast<double>(s.side) * qty;
+    const risk::RiskResult rr = rm_.pre_trade_check(signed_qty, price, pt_.last_mid());
+    if (rr != risk::RiskResult::APPROVED) {
+        spdlog::warn("place_skipped reason=pre_trade_check result={} cid={} side={} price={:.8f} qty={:.8f}",
+                     risk::to_str(rr), s.client_order_id, side_str, price, qty);
+        transition(slot_idx, OrderState::REJECTED);
+        sync_open_orders();
+        return false;
+    }
+
     rm_.record_submission();
     OrderAck a = rest_.place_order(side_str, qty, price, true, s.client_order_id);
     if (a.ok) {

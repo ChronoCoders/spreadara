@@ -10,6 +10,11 @@ import {
   type SystemEvent,
 } from '../api';
 import { useWsState } from '../WsStateContext';
+import {
+  StaleBanner,
+  STALE_OPACITY,
+  useFreshness,
+} from '../components/freshness';
 import { MetricCard } from '../components/MetricCard';
 import { QuoteBar } from '../components/QuoteBar';
 import { ProgressBar } from '../components/ProgressBar';
@@ -104,26 +109,33 @@ export default function Dashboard() {
   const [snap, setSnap] = useState<ExtSnapshot | null>(null);
   const [trades, setTrades] = useState<Trade[]>([]);
   const [events, setEvents] = useState<SystemEvent[]>([]);
+  const { stale, markSuccess, markError } = useFreshness();
 
   useEffect(() => {
     const ws = new WebSocketClient(
-      (s) => setSnap(s as ExtSnapshot),
+      (s) => {
+        setSnap(s as ExtSnapshot);
+        markSuccess();
+      },
       (state) => setWsState(state),
     );
     ws.connect();
     api
       .snapshot()
-      .then((s) => setSnap(s as ExtSnapshot))
-      .catch(() => {});
+      .then((s) => {
+        setSnap(s as ExtSnapshot);
+        markSuccess();
+      })
+      .catch(() => markError());
     const poll = () => {
       api
         .trades(20)
         .then((t) => setTrades(t.slice(0, 20)))
-        .catch(() => {});
+        .catch(() => markError());
       api
         .events(50)
         .then((e) => setEvents(e.slice(0, 50)))
-        .catch(() => {});
+        .catch(() => markError());
     };
     poll();
     const id = setInterval(poll, 5000);
@@ -131,7 +143,7 @@ export default function Dashboard() {
       clearInterval(id);
       ws.close();
     };
-  }, [setWsState]);
+  }, [setWsState, markSuccess, markError]);
 
   const s = snap;
 
@@ -181,9 +193,24 @@ export default function Dashboard() {
 
   const invTone = signTone(inventory);
 
+  // The dashboard consumes the live WS feed. A dropped WS connection means the
+  // displayed values are no longer live, so treat it the same as stale data:
+  // dim the panels and surface an explicit overlay.
+  const disconnected = wsState !== 'connected';
+  const dimmed = stale || disconnected;
+  const dimStyle = { opacity: dimmed ? STALE_OPACITY : 1 };
+
   return (
-    <>
-      <div className="section">
+    <div style={{ position: 'relative', display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
+      {disconnected && (
+        <div className="disconnected-overlay">
+          <span>WS DISCONNECTED — RECONNECTING…</span>
+        </div>
+      )}
+
+      <StaleBanner show={stale && !disconnected} />
+
+      <div className="section" style={dimStyle}>
         <div className="row-4">
           <MetricCard label="Mid">
             <div className="metric-value">{Number.isFinite(mid) ? formatPrice(mid) : '—'}</div>
@@ -235,7 +262,7 @@ export default function Dashboard() {
         </div>
       </div>
 
-      <div className="section">
+      <div className="section" style={dimStyle}>
         <QuoteBar
           bid={bid}
           ask={ask}
@@ -244,7 +271,7 @@ export default function Dashboard() {
         />
       </div>
 
-      <div className="section">
+      <div className="section" style={dimStyle}>
         <div className="row-4">
           <MetricCard label="Unrealized P&L">
             <div className={`metric-value ${signTone(unrealized)}`}>{signedMoney(unrealized)}</div>
@@ -338,7 +365,7 @@ export default function Dashboard() {
         </div>
       </div>
 
-      <div className="section" style={{ flex: 1 }}>
+      <div className="section" style={{ flex: 1, ...dimStyle }}>
         <div className="row-2">
           <TradesTable trades={trades} formatPrice={formatPrice} />
           <EventsFeed events={events} />
@@ -351,6 +378,6 @@ export default function Dashboard() {
           {wsState === 'connected' ? 'CONNECTED' : 'DISCONNECTED'}
         </span>
       </footer>
-    </>
+    </div>
   );
 }

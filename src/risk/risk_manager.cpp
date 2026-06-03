@@ -16,8 +16,9 @@ namespace spreadara::risk {
 namespace {
 constexpr std::chrono::seconds kRateWindow{60};
 constexpr std::chrono::seconds kRejectionWindow{30};
+}
 
-const char* reason_str(RiskResult r) {
+const char* to_str(RiskResult r) {
     switch (r) {
         case RiskResult::REJECTED_POSITION: return "position";
         case RiskResult::REJECTED_SIZE: return "size";
@@ -28,7 +29,6 @@ const char* reason_str(RiskResult r) {
         case RiskResult::APPROVED: return "approved";
     }
     return "unknown";
-}
 }
 
 RiskManager::RiskManager(const infra::Config& cfg, PositionTracker& pt)
@@ -119,7 +119,7 @@ RiskResult RiskManager::pre_trade_check(double side_signed_qty, double price, do
             record_rejection(now);
         }
         spdlog::warn("risk_reject reason={} qty={:.6f} price={:.4f} mid={:.4f} inv={:.6f} equity={:.4f} open_orders={}",
-                     reason_str(result), side_signed_qty, price, current_mid, inv, equity,
+                     to_str(result), side_signed_qty, price, current_mid, inv, equity,
                      open_orders);
         if (reporter_) {
             db::DbEvent ev{};
@@ -129,7 +129,7 @@ RiskResult RiskManager::pre_trade_check(double side_signed_qty, double price, do
                     std::chrono::system_clock::now().time_since_epoch()).count());
             std::snprintf(ev.evt.severity, sizeof(ev.evt.severity), "warn");
             std::snprintf(ev.evt.source, sizeof(ev.evt.source), "risk");
-            std::snprintf(ev.evt.code, sizeof(ev.evt.code), "%s", reason_str(result));
+            std::snprintf(ev.evt.code, sizeof(ev.evt.code), "%s", to_str(result));
             std::snprintf(ev.evt.msg, sizeof(ev.evt.msg),
                           "qty=%.6f price=%.4f mid=%.4f inv=%.6f equity=%.4f open_orders=%d",
                           side_signed_qty, price, current_mid, inv, equity, open_orders);
