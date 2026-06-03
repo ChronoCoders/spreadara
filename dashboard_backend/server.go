@@ -39,7 +39,7 @@ type Snapshot struct {
 	Fees       float64 `json:"total_fees"`
 	Mid        float64 `json:"mid_price"`
 	CumTotal   float64 `json:"cum_total"`
-	// Phase 8: real values now sourced from extended position_snapshots row.
+	// Real values now sourced from extended position_snapshots row.
 	BidPrice             float64 `json:"bid_price"`
 	AskPrice             float64 `json:"ask_price"`
 	SpreadBps            float64 `json:"spread_bps"`
@@ -48,7 +48,6 @@ type Snapshot struct {
 	MaxOpenOrders        int     `json:"max_open_orders"`
 	CurrentDrawdownPct   float64 `json:"current_drawdown_pct"`
 	MaxDrawdownPct       float64 `json:"max_drawdown_pct"`
-	// Phase 8 telemetry fields:
 	BidQty              float64 `json:"bid_qty"`
 	AskQty              float64 `json:"ask_qty"`
 	Volatility          float64 `json:"volatility"`
@@ -200,8 +199,8 @@ type sqlReader struct{ db *sql.DB }
 
 func (r *sqlReader) latestSnapshot() (Snapshot, error) {
 	var s Snapshot
-	// Phase 8: NullFloat64 / NullInt64 for the columns added via ALTER. Rows
-	// inserted before Phase 8 carry NULL for these and must scan cleanly.
+	// NullFloat64 / NullInt64 for the columns added via ALTER. Older rows
+	// carry NULL for these and must scan cleanly.
 	var bb, ba, sp, bq, aq, vol, gm, kk, tp, l50, l95, l99 sql.NullFloat64
 	var oo sql.NullInt64
 	err := r.db.QueryRow(
@@ -494,12 +493,12 @@ type server struct {
 	r          dbReader
 	wsInterval time.Duration
 	corsOrigin string
-	// Phase 7: configuration surfaced via env vars and merged into responses.
+	// Configuration surfaced via env vars and merged into responses.
 	maxOpenOrders  int
 	maxDrawdownPct float64
 	exchangeName   string
 	startTime      time.Time
-	// Phase 8: progress-bar denominator for the inventory gauge. Env override
+	// Progress-bar denominator for the inventory gauge. Env override
 	// SPREADARA_MAX_INVENTORY_DISPLAY; config-file value is operator-doc only
 	// (the Go backend does not parse TOML).
 	maxInventoryDisplay float64
@@ -726,7 +725,7 @@ func defaultCalibrationRunner() error {
 	return runTradingBinary("--calibration-smoke")
 }
 
-// enrichSnapshot fills the Phase-7 derived fields on top of whatever the
+// enrichSnapshot fills the derived fields on top of whatever the
 // dbReader returned. Splits cleanly so unit tests using stubReader (which
 // doesn't implement haltedReader) keep returning the base snapshot.
 func (s *server) enrichSnapshot(snap *Snapshot) {
@@ -881,7 +880,7 @@ func (s *server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		// Fallback path for stub readers in tests that don't implement statusReader.
 		lastTs = snap.TsNs
 	}
-	// Phase 8: ws_connected proxy = any position_snapshots row in last 5s.
+	// ws_connected proxy = any position_snapshots row in last 5s.
 	wsConnected := false
 	if lastTs > 0 {
 		ageNs := time.Now().UnixNano() - lastTs

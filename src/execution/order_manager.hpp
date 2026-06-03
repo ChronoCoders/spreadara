@@ -59,8 +59,8 @@ struct OrderSlot {
     double executed_qty{0.0};
     OrderState state{OrderState::NEW};
     uint64_t submit_ts_ns{0};
-    // WHY: RDTSC capture at SUBMITTED so a future async-ACK path (Phase 9
-    // FIX, user-data stream) can still compute round-trip latency across
+    // WHY: RDTSC capture at SUBMITTED so a future async-ACK path (FIX,
+    // user-data stream) can still compute round-trip latency across
     // method boundaries. Today's synchronous place_order/ACK pair uses it
     // within place_new only.
     uint64_t submit_cycles{0};
@@ -100,11 +100,10 @@ public:
     // slots are inert.
     void shutdown_cancel_all();
 
-    // Called by the fill-applier thread peer (Phase 6 user-data stream injects here).
-    // Phase 4: public so tests / mocks can inject synthetic fills.
+    // Public so tests / mocks can inject synthetic fills.
     bool inject_fill(const risk::FillInput& f);
 
-    // Phase 9: external producers (OkxPrivateWsClient) call this to push a
+    // External producers (OkxPrivateWsClient) call this to push a
     // parsed FillInput onto the same ring the local quote-thread feeds. Goes
     // through the same FlatBuffer-encode + slot-bookkeeping path as
     // inject_fill so the consumer thread is unchanged.
@@ -113,10 +112,10 @@ public:
     // Reconciliation entry point.
     void reconcile_now();
 
-    // WHY: optional Phase-5 hook. nullptr by default keeps existing tests intact.
+    // WHY: optional reporter hook. nullptr by default keeps existing tests intact.
     void set_reporter(db::PgReporter* r) { reporter_ = r; }
 
-    // Phase 8: rolling-window ACK-latency percentiles in microseconds. Returns
+    // Rolling-window ACK-latency percentiles in microseconds. Returns
     // 0.0 if the window is empty. Cheap enough to call at 1 Hz from snap_thread.
     void latency_percentiles(double& p50_us, double& p95_us, double& p99_us) const;
     double latency_p50_us() const;
@@ -125,7 +124,7 @@ public:
 
 private:
     friend class OrderManagerTestPeer;
-    // WHY: the Phase-6 BacktestRunner drives quotes inline (no threads) and
+    // WHY: the BacktestRunner drives quotes inline (no threads) and
     // needs the same private seam test peers use. Defined in
     // backtest_runner.cpp.
     friend class OrderManagerBacktestAccess;
@@ -182,7 +181,7 @@ private:
     std::atomic<uint64_t> cid_counter_{0};
     uint64_t start_ms_{0};
 
-    // Phase 8: ACK-latency telemetry (RDTSC cycles, rolling window). Mutex
+    // ACK-latency telemetry (RDTSC cycles, rolling window). Mutex
     // contention is negligible — record fires once per ACK (~10/s), query
     // fires at 1 Hz from snap_thread.
     static constexpr std::size_t kLatencyWindow = 1000;
@@ -197,8 +196,8 @@ private:
     // reconcile threads all touch slots_ and rest_; libcurl handles are not
     // thread-safe and slot fields are non-atomic. One coarse mutex held across
     // a REST call (~50–100 ms wire latency) is acceptable here because the
-    // contending paths (halt, reconcile) are infrequent. Phase 5 may split
-    // this into rest_mu_ + slots_mu_ if contention becomes measurable.
+    // contending paths (halt, reconcile) are infrequent. This may later split
+    // into rest_mu_ + slots_mu_ if contention becomes measurable.
     mutable std::mutex mu_;
 };
 

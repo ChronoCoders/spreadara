@@ -1,6 +1,6 @@
 #pragma once
 
-// Phase 7: OKX WebSocket adapter. Mirrors the Binance client's shape — pushes
+// OKX WebSocket adapter. Mirrors the Binance client's shape — pushes
 // into the same EventRing using the same BookTickerEvent/DepthEvent/TradeEvent
 // PODs. Downstream pipeline (TickProcessor, OrderBook, strategy) is untouched.
 //

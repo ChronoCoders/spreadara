@@ -200,8 +200,8 @@ bool OrderManager::place_new(int slot_idx, double price, double qty) {
     if (s.state != OrderState::NEW) s.state = OrderState::NEW;
     transition(slot_idx, OrderState::PENDING);
     transition(slot_idx, OrderState::SUBMITTED);
-    // Phase 8: RDTSC at SUBMITTED transition; stored on the slot so an
-    // async-ACK path (Phase 9) can read it back when the ACK arrives later.
+    // RDTSC at SUBMITTED transition; stored on the slot so an
+    // async-ACK path can read it back when the ACK arrives later.
     s.submit_cycles = infra::rdtsc_cycles();
     const char* side_str = (s.side > 0) ? "BUY" : "SELL";
     rm_.record_submission();
@@ -346,7 +346,7 @@ bool OrderManager::inject_fill(const risk::FillInput& f) {
         ev.trade.fee = f.fee;
         std::snprintf(ev.trade.fee_asset, sizeof(ev.trade.fee_asset), "%s", f.fee_asset.c_str());
         ev.trade.ts_ns = f.timestamp_ns;
-        // Phase 8: postOnly placements via OKX/Binance guarantee maker-only.
+        // postOnly placements via OKX guarantee maker-only.
         // Non-maker fills (e.g. market flatten on halt) must set false explicitly.
         ev.trade.is_maker = true;
         if (!reporter_->push(ev)) {

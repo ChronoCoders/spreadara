@@ -12,7 +12,7 @@ namespace spreadara::execution {
 struct Credentials {
     std::string api_key;
     std::string api_secret;
-    // Phase 7: OKX requires a third credential ("passphrase") set when the
+    // OKX requires a third credential ("passphrase") set when the
     // API key was created. Default-initialized so existing {key, secret}
     // brace-init sites don't trigger -Wmissing-field-initializers.
     std::string api_passphrase{};

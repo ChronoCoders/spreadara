@@ -180,7 +180,6 @@ export default function Dashboard() {
 
   return (
     <>
-      {/* Top metric row */}
       <div className="section">
         <div className="row-4">
           <MetricCard label="Mid">
@@ -233,7 +232,6 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* Quote bar */}
       <div className="section">
         <QuoteBar
           bid={bid}
@@ -243,7 +241,6 @@ export default function Dashboard() {
         />
       </div>
 
-      {/* Second metric row */}
       <div className="section">
         <div className="row-4">
           <MetricCard label="Unrealized P&L">
@@ -338,7 +335,6 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* Bottom row */}
       <div className="section" style={{ flex: 1 }}>
         <div className="row-2">
           <TradesTable trades={trades} formatPrice={formatPrice} />

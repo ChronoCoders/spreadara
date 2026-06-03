@@ -190,7 +190,6 @@ BacktestStats run_one(const infra::Config& cfg, const std::vector<std::string>& 
     });
 
     engine.run_sync(archives, nullptr);
-    // Final equity sample.
     reporter.on_equity_sample(cfg.backtest.initial_capital + pt.equity());
 
     return reporter.finalize();

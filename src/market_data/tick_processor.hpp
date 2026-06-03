@@ -29,7 +29,7 @@ public:
 
     const OrderBook& book() const { return book_; }
 
-    // Phase 8: expose the rolling-window stdev for the 1 Hz position-snapshot
+    // Expose the rolling-window stdev for the 1 Hz position-snapshot
     // pusher in main.cpp. vol_ is otherwise private to the tick processor.
     double current_volatility() const { return vol_.stdev_log_returns(); }
 

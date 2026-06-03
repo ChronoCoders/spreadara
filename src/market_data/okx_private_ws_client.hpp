@@ -1,6 +1,6 @@
 #pragma once
 
-// Phase 9: OKX private user-data WebSocket adapter.
+// OKX private user-data WebSocket adapter.
 //
 // Subscribes to the `orders` and `positions` channels on
 // /ws/v5/private (or the testnet equivalent). Each parsed "filled" /
@@ -63,7 +63,7 @@ private:
     std::atomic<bool> stopped_{false};
 };
 
-// Phase 9: detail helpers exposed for unit testing. parse_orders_fill walks
+// Detail helpers exposed for unit testing. parse_orders_fill walks
 // data[0] (test fixture uses a single-entry array) and produces a FillInput;
 // returns false on non-fill states or malformed input. build_subscribe_message
 // returns the literal frame the connection sends post-login.

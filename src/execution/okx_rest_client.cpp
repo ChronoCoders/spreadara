@@ -454,8 +454,8 @@ AmendAck OkxRestClient::amend_order(int64_t exchange_order_id, double new_price,
         // Fall through to cancel+place fallback below.
     }
 
-    // WHY: same cancel+place fallback as the Binance adapter, and the same
-    // cancelled_only half-state surface when the replacement place fails.
+    // WHY: cancel+place fallback, surfacing the cancelled_only half-state
+    // when the replacement place fails.
     CancelAck c = cancel_order("", exchange_order_id);
     if (!c.ok) return a;
     OrderAck o = place_order(side, new_qty_btc, new_price, post_only,

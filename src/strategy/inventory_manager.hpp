@@ -25,7 +25,7 @@ public:
         return ratio >= (cfg_.strategy.emergency_unwind_pct / 100.0);
     }
 
-    // Phase 4 will wire live funding from the exchange; for now return config stub.
+    // Will wire live funding from the exchange; for now return config stub.
     double funding_rate() const { return cfg_.strategy.funding_rate; }
 
 private:

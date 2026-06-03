@@ -36,7 +36,7 @@ struct DbTrade {
     double fee;
     char fee_asset[8];
     uint64_t ts_ns;
-    bool is_maker;   // Phase 8: postOnly fills are always maker
+    bool is_maker;   // postOnly fills are always maker
 };
 
 struct DbPositionSnapshot {
@@ -47,7 +47,6 @@ struct DbPositionSnapshot {
     double unrealized;
     double fees;
     double mid;
-    // Phase 8 additions:
     double best_bid;
     double best_ask;
     double spread_bps;
@@ -91,7 +90,7 @@ struct DbEvent {
 
 static_assert(std::is_trivially_copyable<DbEvent>::value, "DbEvent must be trivially copyable");
 
-// WHY: SPSC capacity must be constexpr. Phase 1/2/3 convention: hard-coded
+// WHY: SPSC capacity must be constexpr. Hard-coded
 // template arg matches cfg.transport.db_ring_capacity default (4096).
 using DbEventRing = transport::SpscRingBuffer<DbEvent, 4096>;
 

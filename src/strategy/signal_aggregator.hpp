@@ -8,7 +8,7 @@
 
 namespace spreadara::strategy {
 
-// WHY: 512-byte payload cap; observed Phase 1 MarketSnapshot FB sizes were 96/112/128 bytes
+// WHY: 512-byte payload cap; observed MarketSnapshot FB sizes were 96/112/128 bytes
 // in live runs, so 512 gives ~4x headroom while keeping the POD trivially copyable for SPSC.
 struct SnapshotMsg {
     uint16_t size{0};

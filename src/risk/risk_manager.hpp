@@ -43,7 +43,7 @@ public:
     // Number of rejections recorded in the last 30 seconds.
     int consecutive_rejections_in_window(std::chrono::steady_clock::time_point now);
 
-    // WHY: optional Phase-5 hook. nullptr by default keeps existing tests intact.
+    // WHY: optional hook. nullptr by default keeps existing tests intact.
     void set_reporter(db::PgReporter* r) { reporter_ = r; }
 
 private:

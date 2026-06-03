@@ -49,7 +49,7 @@ public:
     // Test hook: run one monitor tick synchronously.
     void tick_for_test() { do_tick(std::chrono::steady_clock::now()); }
 
-    // WHY: optional Phase-5 hook. nullptr keeps existing tests unchanged.
+    // WHY: optional hook. nullptr keeps existing tests unchanged.
     void set_reporter(db::PgReporter* r) { reporter_ = r; }
 
 private:

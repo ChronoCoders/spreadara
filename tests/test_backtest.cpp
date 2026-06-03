@@ -1,4 +1,4 @@
-// Unit tests for Phase-6 backtest building blocks. Hits the historical
+// Unit tests for backtest building blocks. Hits the historical
 // loader, simulated rest client, and reporter; integration coverage lives in
 // test_integration.cpp.
 
@@ -37,7 +37,6 @@ TEST(HistoricalLoader, CsvToFbRoundtrip) {
     auto cfg = mk_cfg();
     backtest::HistoricalDataLoader loader(cfg);
 
-    // Write a tiny CSV in /tmp.
     std::string csv = "/tmp/sp6_test_a.csv";
     std::string bin = "/tmp/sp6_test_a.bin";
     {
@@ -142,6 +141,6 @@ TEST(BacktestReporter, SharpeOnKnownSeries) {
     auto s = r.finalize();
     EXPECT_GT(s.final_equity, 0.0);
     EXPECT_NEAR(s.total_pnl, 15.0, 1e-9);
-    EXPECT_GT(s.sharpe_ratio, 0.0);  // positive trend
+    EXPECT_GT(s.sharpe_ratio, 0.0);
     EXPECT_GE(s.max_drawdown_pct, 0.0);
 }

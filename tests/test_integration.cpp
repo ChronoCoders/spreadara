@@ -1,4 +1,4 @@
-// End-to-end integration test for the Phase-6 backtest pipeline. Wires:
+// End-to-end integration test for the backtest pipeline. Wires:
 //   ReplayEngine -> SnapshotRing -> SignalAggregator -> MarketMaker
 //                -> OrderManager (single-threaded via test peer)
 //                -> SimulatedRestClient -> PositionTracker
@@ -220,7 +220,6 @@ TEST(Integration, BacktestPipelineProducesFills) {
     cb.notify_exception("test");
     EXPECT_TRUE(cb.halted());
 
-    // Cleanup.
     std::remove(bin.c_str());
 }
 

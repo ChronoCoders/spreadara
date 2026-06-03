@@ -90,7 +90,7 @@ void TickProcessor::process_event(const MarketEvent& ev) {
                     // WHY: REST failed (see rest_snapshot_fail log above for detail; in
                     // geo-blocked regions this is HTTP 451). @depth20 sends a full top-20
                     // snapshot every 100ms, so the incoming event is itself a valid
-                    // recovery point. See [[spreadara]] memory for Phase 7 proxy plan.
+                    // recovery point.
                     spdlog::info("resync_fallback path=ws stream=depth20@100ms");
                     std::array<PriceLevel, OrderBook::kMaxLevels> b = ev.depth.bids;
                     std::array<PriceLevel, OrderBook::kMaxLevels> a = ev.depth.asks;

@@ -5,7 +5,7 @@
 
 namespace spreadara::execution {
 
-// TODO Phase 7: native FIX 4.4 over TLS to the exchange's FIX gateway.
+// TODO: native FIX 4.4 over TLS to the exchange's FIX gateway.
 //   - Session-level Logon (35=A) with ResetSeqNumFlag (141=Y) on first connect
 //   - MsgSeqNum (34) management; persist last-sent / last-recv across reconnects
 //   - Heartbeat (35=0) interval per Logon negotiation (typ. 30s)

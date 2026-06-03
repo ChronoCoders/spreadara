@@ -114,7 +114,7 @@ Config load_config(const std::string& path) {
     c.risk.max_consecutive_rejections = tbl["risk"]["max_consecutive_rejections"].value_or(5);
     c.risk.circuit_breaker_poll_ms = tbl["risk"]["circuit_breaker_poll_ms"].value_or(100);
 
-    // Phase 7: when [exchange] is present, mirror its values into the legacy
+    // When [exchange] is present, mirror its values into the legacy
     // fields so the existing market_data / execution / strategy code keeps
     // reading the same struct slots. Test fixtures that build Config directly
     // leave exchange.name="" and are unaffected.

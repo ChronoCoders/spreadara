@@ -1,4 +1,4 @@
-// Phase 9: OKX private user-data WS parser tests.
+// OKX private user-data WS parser tests.
 //
 // No network. Drives the public `detail::` helpers in okx_private_ws_client
 // with hand-built JSON fixtures and asserts the resulting FillInput fields

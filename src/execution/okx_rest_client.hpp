@@ -1,7 +1,6 @@
 #pragma once
 
-// Phase 7: OKX REST adapter. Implements the same IRestClient seam Binance
-// implements so OrderManager is swap-mechanical.
+// OKX REST adapter.
 //
 // Unit conventions:
 //   Internal trading code expresses qty in BTC. The OKX wire format expresses
@@ -28,7 +27,7 @@ namespace spreadara::db { class PgReporter; }
 
 namespace spreadara::execution::okx {
 
-// NOT thread-safe — same single-thread constraint as the Binance RestClient.
+// NOT thread-safe.
 class OkxRestClient : public IRestClient {
 public:
     OkxRestClient(const infra::Config& cfg, const Credentials& creds,

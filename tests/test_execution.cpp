@@ -135,7 +135,6 @@ TEST(OrderManager, ForTestingStateTransition) {
     execution::OrderManager om(cfg, rest, pt, rm, cb, nullptr);
     execution::OrderManagerTestPeer peer(om);
 
-    // NEW -> PENDING -> SUBMITTED -> ACKNOWLEDGED -> PARTIALLY_FILLED -> FILLED
     EXPECT_TRUE(peer.transition(0, execution::OrderState::PENDING));
     EXPECT_TRUE(peer.transition(0, execution::OrderState::SUBMITTED));
     EXPECT_TRUE(peer.transition(0, execution::OrderState::ACKNOWLEDGED));

@@ -145,7 +145,7 @@ bool parse_orders_fill(const std::string& json,
         simdjson::ondemand::parser parser;
         // WHY: padded_string required — simdjson reads past the logical end
         // for SIMD reasons. std::string's internal buffer is NOT padded; using
-        // it directly is UB (Phase 5 lesson).
+        // it directly is UB.
         simdjson::padded_string padded(json);
         simdjson::ondemand::document doc = parser.iterate(padded);
         auto data = doc["data"];
@@ -182,7 +182,7 @@ bool parse_orders_fill(const std::string& json,
             parse_double_sv(fee_sv, fee);
             out.price = px;
             // OKX fillSz for SWAP is in CONTRACTS; PositionTracker accounts in
-            // BTC (Phase 4). Convert at the wire boundary.
+            // BTC. Convert at the wire boundary.
             out.qty = fill_sz * cfg.exchange.contract_size;
             out.fee = std::fabs(fee);
             out.fee_asset.assign(fee_ccy_sv);

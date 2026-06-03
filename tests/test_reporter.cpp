@@ -115,7 +115,6 @@ TEST(PgReporter, SchemaCreationIdempotent) {
     EXPECT_TRUE(r.create_schema_for_test());
     EXPECT_TRUE(r.create_schema_for_test());
 
-    // Cleanup.
     try {
         pqxx::connection c(dsn);
         pqxx::work w(c);

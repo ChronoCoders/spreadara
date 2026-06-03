@@ -41,10 +41,9 @@
 #include "execution/order_manager.hpp"
 #include "db/pg_reporter.hpp"
 
-// Phase-6 testnet validation note:
-//   When [testnet] enabled=true in config.toml, the ws/rest URLs are swapped
-//   and credentials are read from testnet env vars instead of the production
-//   env vars. The log line "using_testnet=true ..." confirms wiring.
+// Testnet wiring: when [testnet] enabled=true in config.toml, the ws/rest URLs
+// are swapped and credentials are read from testnet env vars instead of the
+// production env vars. The log line "using_testnet=true ..." confirms wiring.
 
 namespace {
 std::atomic<bool> g_shutdown{false};
@@ -53,7 +52,7 @@ boost::asio::io_context* g_ioc_ptr{nullptr};
 
 int main(int argc, char** argv) {
     // WHY: positional first arg = config path (back-compat). Remaining argv
-    // is parsed for Phase-6 flags so existing invocations stay unchanged.
+    // is parsed for flags so existing invocations stay unchanged.
     std::string cfg_path = "config/config.toml";
     bool flag_backtest = false;
     bool flag_calibration_smoke = false;
@@ -77,7 +76,7 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    // Phase 7: --validate-config runs offline checks and exits. Done BEFORE
+    // --validate-config runs offline checks and exits. Done BEFORE
     // logger init so PASS/FAIL goes to stdout, not the log file.
     if (flag_validate_config) {
         int fails = 0;
@@ -163,7 +162,7 @@ int main(int argc, char** argv) {
                      cfg.market_data.ws_base_url, cfg.execution.rest_base_url);
     }
 
-    // Phase-6 backtest path — short-circuits the live wiring entirely.
+    // Backtest path — short-circuits the live wiring entirely.
     if (flag_backtest || flag_calibration_smoke) {
         namespace fs = std::filesystem;
         std::vector<std::string> archives;
@@ -289,7 +288,7 @@ int main(int argc, char** argv) {
     mm.set_risk(&risk_mgr, &circuit_breaker);
     circuit_breaker.start();
 
-    // WHY: Phase-5 Postgres reporter. DSN comes ONLY from env. If unset, the
+    // WHY: Postgres reporter. DSN comes ONLY from env. If unset, the
     // reporter runs in dry mode (logs warn at startup; never blocks trading).
     const char* pg_dsn_env = std::getenv("SPREADARA_PG_DSN");
     const std::string pg_dsn = (pg_dsn_env && *pg_dsn_env) ? pg_dsn_env : "";
@@ -336,7 +335,7 @@ int main(int argc, char** argv) {
             ev.snap.unrealized = unreal;
             ev.snap.fees = fees;
             ev.snap.mid = pos_tracker.last_mid();
-            // Phase 8: pull live order-book + strategy + latency telemetry so
+            // Pull live order-book + strategy + latency telemetry so
             // the dashboard's per-second snapshot row carries actionable data.
             // OrderBook getters return 0.0 / 0.0 before first depth event, which
             // is fine — the dashboard treats 0 mid/spread as "not yet ready".
@@ -419,7 +418,7 @@ int main(int argc, char** argv) {
     auto okx_client = std::make_unique<spreadara::market_data::okx::OkxWsClient>(
         ioc, cfg, *ring, fatal_cb);
 
-    // Phase 9: private user-data WS. Real-time order/fill events feed the same
+    // Private user-data WS. Real-time order/fill events feed the same
     // FillEventRing as the local quote-thread, so PositionTracker accounting
     // mirrors exchange truth. Disable via [market_data].private_ws_enabled.
     std::unique_ptr<spreadara::market_data::okx::OkxPrivateWsClient> private_client;

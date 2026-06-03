@@ -59,7 +59,7 @@ constexpr const char* kSchemaSql =
     "  fees DOUBLE PRECISION NOT NULL,"
     "  total DOUBLE PRECISION NOT NULL"
     ");"
-    // Phase 8: idempotent telemetry columns. DOUBLE PRECISION (not NUMERIC) to
+    // Idempotent telemetry columns. DOUBLE PRECISION (not NUMERIC) to
     // match the rest of the schema and avoid pqxx <-> numeric conversion friction.
     // T_param (not T) avoids reserved-feeling identifier conflicts in some clients.
     "ALTER TABLE position_snapshots ADD COLUMN IF NOT EXISTS best_bid    DOUBLE PRECISION;"
