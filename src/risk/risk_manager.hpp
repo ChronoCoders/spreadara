@@ -36,12 +36,16 @@ public:
     // side_signed_qty: +qty for buy, -qty for sell.
     RiskResult pre_trade_check(double side_signed_qty, double price, double current_mid);
 
-    // WHY: rate limit tracks REAL REST calls, not cheap local pre_trade_check
-    // evaluations. OrderManager calls this immediately before each
-    // place_order / cancel_order / amend_order / place_market_order so the
-    // rate-limit window reflects exchange-bound traffic, not strategy
-    // evaluation rate.
+    // WHY: rate limit tracks REAL REST calls at the OKX REST boundary, not
+    // cheap local pre_trade_check evaluations. Order and cancel traffic are
+    // counted in SEPARATE windows so a cancel storm can't exhaust the order
+    // budget (or vice versa) — OKX enforces per-endpoint limits. OrderManager
+    // calls record_submission() before each place/market-order and
+    // record_cancel() before each cancel. pre_trade_check gates the ORDER
+    // window; cancels are recorded but never blocked (a cancel is a safety
+    // operation that must not be abandoned on a rate cap).
     void record_submission();
+    void record_cancel();
 
     void set_open_order_count(int n) { open_order_count_.store(n, std::memory_order_release); }
     int open_order_count() const { return open_order_count_.load(std::memory_order_acquire); }
@@ -53,14 +57,18 @@ public:
     void set_reporter(db::PgReporter* r) { reporter_ = r; }
 
 private:
-    void record_attempt(std::chrono::steady_clock::time_point tp);
+    // Trim entries older than the window and append tp. Caller holds mu_.
+    void record_in(std::deque<std::chrono::steady_clock::time_point>& bucket,
+                   std::chrono::steady_clock::time_point tp);
     void record_rejection(std::chrono::steady_clock::time_point tp);
 
     const infra::Config& cfg_;
     PositionTracker& pt_;
 
     std::mutex mu_;
-    std::deque<std::chrono::steady_clock::time_point> attempt_times_;
+    // Separate per-endpoint rate windows (see record_submission/record_cancel).
+    std::deque<std::chrono::steady_clock::time_point> order_times_;
+    std::deque<std::chrono::steady_clock::time_point> cancel_times_;
     std::deque<std::chrono::steady_clock::time_point> rejection_times_;
 
     std::atomic<int> open_order_count_{0};

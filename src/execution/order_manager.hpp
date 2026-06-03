@@ -12,6 +12,8 @@
 #include <string>
 #include <thread>
 
+#include <flatbuffers/flatbuffers.h>
+
 #include "execution/i_rest_client.hpp"
 #include "infra/config.hpp"
 #include "risk/position_tracker.hpp"
@@ -138,11 +140,17 @@ private:
                                const OpenOrdersSnapshot& oo);
     bool for_testing_state_transition(int slot_idx, OrderState to);
     void for_testing_on_quote(double bid, double ask, double qty);
+    void for_testing_check_ack_timeouts(uint64_t now_ns) { check_ack_timeouts(now_ns); }
+    bool for_testing_cancel_slot(int slot_idx) {
+        std::lock_guard<std::mutex> lk(mu_);
+        return cancel_slot(slot_idx);
+    }
     const OrderSlot& peer_slot(int idx) const { return slots_[idx]; }
 
     enum SlotIdx : int { BID = 0, ASK = 1 };
 
     void quote_loop();
+    void check_ack_timeouts(uint64_t now_ns);
     void fill_apply_loop();
     void halt_watcher_loop();
     void reconcile_loop();
@@ -183,6 +191,10 @@ private:
 
     std::atomic<uint64_t> cid_counter_{0};
     uint64_t start_ms_{0};
+
+    // Reused across fills (guarded by mu_) — Clear() between encodes avoids a
+    // per-fill builder allocation. See inject_fill.
+    flatbuffers::FlatBufferBuilder fbb_{128};
 
     // ACK-latency telemetry (RDTSC cycles, rolling window). Mutex
     // contention is negligible — record fires once per ACK (~10/s), query

@@ -22,8 +22,10 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -526,6 +528,9 @@ type server struct {
 	alertFire  alertFirer
 	logPath    string
 	configPath string
+	// configMu serializes POST /api/config so concurrent writes can't
+	// interleave the backup + temp-file + rename sequence.
+	configMu sync.Mutex
 
 	// v0.12 additions: backtest results CSV + run forker. Mirrors the
 	// calibration pattern.
@@ -967,6 +972,56 @@ func (s *server) handleInventory(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, pts)
 }
 
+// maxAlertBodyBytes caps the POST /api/alerts request body. A rule is a few
+// short fields, so anything larger is malformed or abusive.
+const maxAlertBodyBytes = 4096
+
+// validateWebhookURL enforces that an alert webhook target is an https URL
+// pointing at a public address. It rejects non-https schemes and any host
+// that is (or resolves to) a loopback, private (RFC 1918 / ULA), or
+// link-local address — the SSRF guard. IP-literal hosts are checked directly
+// so the IP path is testable without DNS; named hosts are resolved with
+// net.LookupIP and rejected if ANY resolved address is non-public.
+func validateWebhookURL(raw string) error {
+	if raw == "" {
+		return errors.New("empty url")
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return err
+	}
+	if u.Scheme != "https" {
+		return errors.New("scheme must be https")
+	}
+	host := u.Hostname()
+	if host == "" {
+		return errors.New("missing host")
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return checkPublicIP(ip)
+	}
+	ips, err := net.LookupIP(host)
+	if err != nil {
+		return errors.New("dns lookup failed: " + err.Error())
+	}
+	for _, ip := range ips {
+		if err := checkPublicIP(ip); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// checkPublicIP returns an error if ip is loopback, private, link-local,
+// unspecified, or otherwise not safely routable to a public webhook.
+func checkPublicIP(ip net.IP) error {
+	if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() ||
+		ip.IsLinkLocalMulticast() || ip.IsUnspecified() {
+		return errors.New("host resolves to a non-public address: " + ip.String())
+	}
+	return nil
+}
+
 func (s *server) handleAlerts(w http.ResponseWriter, r *http.Request) {
 	s.cors(w, r)
 	if r.Method == http.MethodOptions {
@@ -976,6 +1031,7 @@ func (s *server) handleAlerts(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		writeJSON(w, s.alerts.list())
 	case http.MethodPost:
+		r.Body = http.MaxBytesReader(w, r.Body, maxAlertBodyBytes)
 		var rule AlertRule
 		if err := json.NewDecoder(r.Body).Decode(&rule); err != nil {
 			http.Error(w, "bad json: "+err.Error(), http.StatusBadRequest)
@@ -984,6 +1040,15 @@ func (s *server) handleAlerts(w http.ResponseWriter, r *http.Request) {
 		if rule.Type == "" || rule.Channel == "" {
 			http.Error(w, "type and channel required", http.StatusBadRequest)
 			return
+		}
+		// SSRF guard: a webhook rule must point at a public https endpoint —
+		// reject loopback/private/link-local targets so the dashboard can't be
+		// turned into an internal-network probe.
+		if rule.Channel == "webhook" {
+			if err := validateWebhookURL(rule.WebhookURL); err != nil {
+				http.Error(w, "invalid webhook_url: "+err.Error(), http.StatusBadRequest)
+				return
+			}
 		}
 		saved := s.alerts.upsert(rule)
 		writeJSON(w, saved)
@@ -1003,16 +1068,23 @@ func (s *server) handleAlerts(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleLogs tails the trading binary's log file. Reads the entire file
-// (the file is rotated by spdlog and stays bounded so this is cheap), then
-// returns the last `lines` rows.
+// logTailWindow bounds how many bytes from the end of the log file we read to
+// satisfy a tail request, so memory stays constant regardless of file size.
+// At ~200 bytes/line this comfortably covers the 1000-line request cap.
+const logTailWindow = 1 << 20
+
+// handleLogs tails the trading binary's log file. It reads only the last
+// logTailWindow bytes from the end of the file (never the whole thing), then
+// returns the last `lines` rows. TotalLines is the count of lines within the
+// read window, so for files larger than the window it is a lower-bound
+// estimate rather than the true file-wide total.
 func (s *server) handleLogs(w http.ResponseWriter, r *http.Request) {
 	s.cors(w, r)
 	if r.Method == http.MethodOptions {
 		return
 	}
 	lines := parseLimitStr(r.URL.Query().Get("lines"), 200, 1000)
-	b, err := os.ReadFile(s.logPath)
+	all, total, err := tailLines(s.logPath, lines)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			writeJSON(w, LogsResponse{Lines: []string{}, TotalLines: 0})
@@ -1021,16 +1093,51 @@ func (s *server) handleLogs(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	writeJSON(w, LogsResponse{Lines: all, TotalLines: total})
+}
+
+// tailLines returns the last n lines of the file at path plus the number of
+// lines seen within the read window. It seeks to max(0, size-logTailWindow)
+// and reads forward, so only a bounded tail is held in memory. When the read
+// starts mid-file (size > window) the first, possibly-partial line is dropped
+// so callers never see a truncated record.
+func tailLines(path string, n int) ([]string, int, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		return nil, 0, err
+	}
+	size := fi.Size()
+	start := size - logTailWindow
+	partial := false
+	if start < 0 {
+		start = 0
+	} else if start > 0 {
+		partial = true
+	}
+	if _, err := f.Seek(start, io.SeekStart); err != nil {
+		return nil, 0, err
+	}
+	b, err := io.ReadAll(f)
+	if err != nil {
+		return nil, 0, err
+	}
 	all := strings.Split(strings.TrimRight(string(b), "\n"), "\n")
 	if len(all) == 1 && all[0] == "" {
-		writeJSON(w, LogsResponse{Lines: []string{}, TotalLines: 0})
-		return
+		return []string{}, 0, nil
+	}
+	if partial && len(all) > 1 {
+		all = all[1:]
 	}
 	total := len(all)
-	if lines < total {
-		all = all[total-lines:]
+	if n < total {
+		all = all[total-n:]
 	}
-	writeJSON(w, LogsResponse{Lines: all, TotalLines: total})
+	return all, total, nil
 }
 
 // parseLimit overload-by-string: original parseLimit takes the request and
@@ -1074,6 +1181,8 @@ func (s *server) handleConfig(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "empty body", http.StatusBadRequest)
 			return
 		}
+		s.configMu.Lock()
+		defer s.configMu.Unlock()
 		// Backup before overwriting. If backup fails the write still proceeds
 		// but we log the issue — operators can recover from git history.
 		if cur, err := os.ReadFile(s.configPath); err == nil {
@@ -1081,7 +1190,9 @@ func (s *server) handleConfig(w http.ResponseWriter, r *http.Request) {
 				log.Printf("config_backup_failed: %v", werr)
 			}
 		}
-		if err := os.WriteFile(s.configPath, body, 0644); err != nil {
+		// Atomic replace: write to a temp file in the same directory, then
+		// rename over the target so a crash mid-write can't truncate config.
+		if err := atomicWriteFile(s.configPath, body); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -1089,6 +1200,36 @@ func (s *server) handleConfig(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
+}
+
+// atomicWriteFile writes data to a temp file in the target's directory and
+// renames it over path, so a reader never observes a partially-written file.
+// The temp file is removed on any error before the rename succeeds.
+func atomicWriteFile(path string, data []byte) error {
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, ".config-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpName)
+		return err
+	}
+	if err := os.Chmod(tmpName, 0644); err != nil {
+		_ = os.Remove(tmpName)
+		return err
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		_ = os.Remove(tmpName)
+		return err
+	}
+	return nil
 }
 
 func (s *server) handleBacktest(w http.ResponseWriter, r *http.Request) {
@@ -1277,6 +1418,19 @@ func (s *server) handleEvents(w http.ResponseWriter, r *http.Request) {
 // no client-to-server traffic processing beyond close).
 const wsGUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
+const (
+	// maxWsFrameLen caps the client-to-server payload we will allocate for.
+	// A dashboard client never sends large frames; anything bigger is abuse
+	// or a desync, so we close rather than make() a huge buffer.
+	maxWsFrameLen = 65535
+	// maxWsControlLen is the RFC 6455 §5.5 limit on control-frame payloads.
+	maxWsControlLen = 125
+	// wsReadIdleTimeout bounds how long the reader goroutine blocks waiting
+	// for a frame before the connection is torn down, so a silent peer can't
+	// leak the goroutine + fd indefinitely.
+	wsReadIdleTimeout = 60 * time.Second
+)
+
 func wsAccept(key string) string {
 	h := sha1.New()
 	h.Write([]byte(key + wsGUID))
@@ -1407,12 +1561,21 @@ func writePongFrame(conn net.Conn, payload []byte) error {
 	return writeFrame(conn, 0xA, payload)
 }
 
+func writeCloseFrame(conn net.Conn) error {
+	return writeFrame(conn, 0x8, nil)
+}
+
 func readClient(conn net.Conn, rd *bufio.Reader, pongCh chan<- []byte) {
 	// Read frames. On close opcode (0x8) or EOF return so the writer can exit.
 	// On ping (0x9) dispatch the (unmasked) payload to pongCh; the main
 	// goroutine sends the pong reply so writes stay serialized on one side.
+	// Each iteration resets a read deadline so an idle peer can't pin the
+	// goroutine + fd open forever.
 	hdr := make([]byte, 2)
 	for {
+		if err := conn.SetReadDeadline(time.Now().Add(wsReadIdleTimeout)); err != nil {
+			return
+		}
 		if _, err := io.ReadFull(rd, hdr); err != nil {
 			return
 		}
@@ -1432,6 +1595,14 @@ func readClient(conn net.Conn, rd *bufio.Reader, pongCh chan<- []byte) {
 				return
 			}
 			plen = int(binary.BigEndian.Uint64(ext))
+		}
+		// Reject oversize data frames and control frames that violate the
+		// RFC 6455 §5.5 125-byte limit. Send a close and tear down rather than
+		// allocate an attacker-controlled buffer.
+		isControl := opcode == 0x8 || opcode == 0x9 || opcode == 0xA
+		if plen > maxWsFrameLen || (isControl && plen > maxWsControlLen) {
+			_ = writeCloseFrame(conn)
+			return
 		}
 		var payload []byte
 		if masked {

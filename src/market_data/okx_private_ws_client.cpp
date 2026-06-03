@@ -40,6 +40,11 @@ namespace spreadara::market_data::okx {
 
 namespace {
 
+// Reusable JSON parse-buffer capacity: max expected frame + simdjson padding.
+// Lets on_read reuse one buffer instead of heap-allocating a padded_string per
+// inbound frame.
+constexpr std::size_t kWsParseReserve = 65536 + simdjson::SIMDJSON_PADDING;
+
 struct ParsedWsUrl {
     std::string host;
     std::string port;
@@ -222,7 +227,9 @@ public:
           om_(om),
           cfg_(cfg),
           on_fatal_(std::move(on_fatal)),
-          backoff_ms_(cfg_.reconnect.initial_backoff_ms) {}
+          backoff_ms_(cfg_.reconnect.initial_backoff_ms) {
+        parse_buf_.reserve(kWsParseReserve);
+    }
 
     void run() { do_resolve(); }
 
@@ -282,6 +289,10 @@ private:
         backoff_ms_ = cfg_.reconnect.initial_backoff_ms;
         logged_in_ = false;
         send_login();
+        // Arm keepalive at handshake, NOT after subscribe-ack: a slow login or
+        // subscribe phase would otherwise leave the timer unarmed past the 30s
+        // idle window and the server would close the socket mid-auth.
+        arm_ping_timer();
         do_read();
     }
 
@@ -338,7 +349,8 @@ private:
     // server does not initiate pings on the private channel the way it does
     // on public (where book updates keep traffic flowing), so we send our
     // own literal 4-byte "ping" frame every 25s. Re-armed after each tick.
-    // Cancelled on disconnect/stop; re-armed by subscribe-ack on reconnect.
+    // Armed at ws-handshake; cancelled on disconnect/stop and re-armed by the
+    // next handshake on reconnect.
     void arm_ping_timer() {
         if (stopping_.load(std::memory_order_acquire)) return;
         ping_timer_.expires_after(std::chrono::seconds(25));
@@ -370,8 +382,12 @@ private:
         }
 
         try {
-            simdjson::padded_string padded(p, n);
-            simdjson::ondemand::document doc = parser_.iterate(padded);
+            if (n + simdjson::SIMDJSON_PADDING > parse_buf_.capacity()) {
+                parse_buf_.reserve(n + simdjson::SIMDJSON_PADDING);
+            }
+            parse_buf_.assign(p, n);
+            simdjson::ondemand::document doc =
+                parser_.iterate(parse_buf_.data(), n, parse_buf_.capacity());
             dispatch(doc);
         } catch (const std::exception& e) {
             spdlog::warn("okx_private_parse_error err={}", e.what());
@@ -411,12 +427,6 @@ private:
             }
             if (event_sv == "subscribe") {
                 spdlog::info("okx_private_subscribe_ok");
-                // WHY: re-arm on every subscribe ack — both orders and
-                // positions channels each return one, so this fires twice
-                // on initial connect. expires_after cancels any prior
-                // pending wait, so the net effect is "25s from the most
-                // recent subscribe ack."
-                arm_ping_timer();
                 return;
             }
         }
@@ -511,7 +521,7 @@ private:
         spdlog::warn("okx_private_disconnect stage={} err={}", stage, ec.message());
 
         // Cancel keepalive so a pending wait can't enqueue a ping onto a
-        // dead socket. arm_ping_timer fires again on the next subscribe ack.
+        // dead socket. arm_ping_timer fires again on the next ws handshake.
         boost::system::error_code cec;
         ping_timer_.cancel(cec);
 
@@ -547,6 +557,7 @@ private:
     ssl::context* ssl_ctx_ref_{nullptr};
     beast::flat_buffer buffer_;
     simdjson::ondemand::parser parser_;
+    std::string parse_buf_;  // reused per frame; see on_read / kWsParseReserve
     std::string host_;
     std::string port_;
     std::string path_;

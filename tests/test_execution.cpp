@@ -42,9 +42,148 @@ public:
         return const_cast<OrderSlot&>(om_.peer_slot(idx));
     }
     const OrderSlot& slot(int idx) const { return om_.peer_slot(idx); }
+    void check_ack_timeouts(uint64_t now_ns) { om_.for_testing_check_ack_timeouts(now_ns); }
+    bool cancel_slot(int idx) { return om_.for_testing_cancel_slot(idx); }
 private:
     OrderManager& om_;
 };
+}
+
+namespace {
+// Defined further down in this TU's anonymous namespace.
+infra::Config make_cfg();
+
+// Configurable IRestClient stub for cancel-failure / flatten-sizing tests.
+class StubRest : public execution::IRestClient {
+public:
+    int cancel_fail_code = 0;    // 0 => cancel succeeds; else ok=false with this code
+    double position_amt = 0.0;   // returned by query_positions
+    bool positions_ok = true;
+    int cancels = 0;
+    int market_orders = 0;
+
+    execution::OrderAck place_order(const std::string&, double qty, double price,
+                                    bool, const std::string& cid) override {
+        execution::OrderAck a;
+        a.ok = true; a.client_order_id = cid; a.exchange_order_id = ++oid_;
+        a.price = price; a.qty = qty; a.http_code = 200;
+        return a;
+    }
+    execution::OrderAck place_market_order(const std::string&, double qty,
+                                           const std::string& cid) override {
+        ++market_orders;
+        execution::OrderAck a;
+        a.ok = true; a.client_order_id = cid; a.exchange_order_id = ++oid_;
+        a.qty = qty; a.http_code = 200;
+        return a;
+    }
+    execution::CancelAck cancel_order(const std::string& cid, int64_t) override {
+        ++cancels;
+        execution::CancelAck c;
+        c.client_order_id = cid; c.http_code = 200;
+        if (cancel_fail_code == 0) { c.ok = true; c.status = "CANCELED"; }
+        else { c.ok = false; c.exchange_code = cancel_fail_code; }
+        return c;
+    }
+    execution::AmendAck amend_order(int64_t, double, double, const std::string&, bool,
+                                    const std::string&) override {
+        execution::AmendAck a; a.ok = true; return a;
+    }
+    execution::PositionsSnapshot query_positions() override {
+        execution::PositionsSnapshot s;
+        s.ok = positions_ok; s.http_code = positions_ok ? 200 : 500;
+        if (positions_ok && position_amt != 0.0) {
+            execution::PositionEntry e; e.position_amt = position_amt;
+            s.positions.push_back(e);
+        }
+        return s;
+    }
+    execution::OpenOrdersSnapshot query_open_orders() override {
+        execution::OpenOrdersSnapshot s; s.ok = true; s.http_code = 200; return s;
+    }
+
+private:
+    int64_t oid_ = 1000;
+};
+
+infra::Config om_test_cfg() {
+    auto c = make_cfg();
+    c.risk.circuit_breaker_poll_ms = 5;
+    return c;
+}
+}  // namespace
+
+TEST(OrderManager, AckTimeoutWatchdog) {
+    auto cfg = om_test_cfg();
+    cfg.execution.ack_timeout_ms = 1;
+    risk::PositionTracker pt;
+    risk::RiskManager rm(cfg, pt);
+    risk::RiskEventRing ring;
+    risk::CircuitBreaker cb(cfg, pt, rm, &ring);
+    StubRest rest;
+    execution::OrderManager om(cfg, rest, pt, rm, cb, nullptr);
+    execution::OrderManagerTestPeer peer(om);
+
+    // Manufacture a slot wedged in SUBMITTED with a long-past submit timestamp.
+    auto& s = peer.slot_mut(0);
+    s.active = true;
+    s.state = execution::OrderState::SUBMITTED;
+    s.client_order_id = "stuck";
+    s.exchange_order_id = 42;
+    s.submit_ts_ns = 1;
+
+    peer.check_ack_timeouts(1'000'000'000ULL);  // now = 1s, well past ack_timeout
+
+    EXPECT_EQ(peer.slot(0).state, execution::OrderState::CANCELED);
+    EXPECT_FALSE(peer.slot(0).active);
+    EXPECT_GE(rest.cancels, 1);
+}
+
+TEST(OrderManager, CancelPersistentFailureEscalates) {
+    auto cfg = om_test_cfg();
+    risk::PositionTracker pt;
+    risk::RiskManager rm(cfg, pt);
+    risk::RiskEventRing ring;
+    risk::CircuitBreaker cb(cfg, pt, rm, &ring);
+    StubRest rest;
+    rest.cancel_fail_code = 50000;  // non-idempotent hard failure
+    execution::OrderManager om(cfg, rest, pt, rm, cb, nullptr);
+    execution::OrderManagerTestPeer peer(om);
+
+    auto& s = peer.slot_mut(0);
+    s.active = true;
+    s.state = execution::OrderState::ACKNOWLEDGED;
+    s.client_order_id = "wedged";
+    s.exchange_order_id = 7;
+
+    EXPECT_FALSE(peer.cancel_slot(0));
+    EXPECT_EQ(rest.cancels, 3);          // bounded retry
+    EXPECT_TRUE(cb.halted());            // escalated to the breaker
+    EXPECT_FALSE(peer.slot(0).active);   // not left active forever
+}
+
+TEST(OrderManager, HaltCancelsAndFlattens) {
+    auto cfg = om_test_cfg();
+    risk::PositionTracker pt;
+    risk::RiskManager rm(cfg, pt);
+    risk::RiskEventRing ring;
+    risk::CircuitBreaker cb(cfg, pt, rm, &ring);
+    StubRest rest;
+    rest.position_amt = 0.05;  // exchange reports a long position to flatten
+    execution::OrderManager om(cfg, rest, pt, rm, cb, nullptr);
+    execution::OrderManagerTestPeer peer(om);
+
+    auto& s = peer.slot_mut(0);
+    s.active = true;
+    s.state = execution::OrderState::ACKNOWLEDGED;
+    s.client_order_id = "live";
+    s.exchange_order_id = 9;
+
+    om.on_halt();
+
+    EXPECT_EQ(peer.slot(0).state, execution::OrderState::CANCELED);
+    EXPECT_GE(rest.cancels, 1);
+    EXPECT_EQ(rest.market_orders, 1);  // flatten sized from query_positions
 }
 
 namespace {

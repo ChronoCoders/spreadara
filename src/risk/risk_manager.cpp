@@ -34,18 +34,25 @@ const char* to_str(RiskResult r) {
 RiskManager::RiskManager(const infra::Config& cfg, PositionTracker& pt)
     : cfg_(cfg), pt_(pt) {}
 
-void RiskManager::record_attempt(std::chrono::steady_clock::time_point tp) {
+void RiskManager::record_in(std::deque<std::chrono::steady_clock::time_point>& bucket,
+                            std::chrono::steady_clock::time_point tp) {
     const auto cutoff = tp - kRateWindow;
-    while (!attempt_times_.empty() && attempt_times_.front() < cutoff) {
-        attempt_times_.pop_front();
+    while (!bucket.empty() && bucket.front() < cutoff) {
+        bucket.pop_front();
     }
-    attempt_times_.push_back(tp);
+    bucket.push_back(tp);
 }
 
 void RiskManager::record_submission() {
     const auto now = std::chrono::steady_clock::now();
     std::lock_guard<std::mutex> lk(mu_);
-    record_attempt(now);
+    record_in(order_times_, now);
+}
+
+void RiskManager::record_cancel() {
+    const auto now = std::chrono::steady_clock::now();
+    std::lock_guard<std::mutex> lk(mu_);
+    record_in(cancel_times_, now);
 }
 
 void RiskManager::record_rejection(std::chrono::steady_clock::time_point tp) {
@@ -95,12 +102,12 @@ RiskResult RiskManager::pre_trade_check(double side_signed_qty, double price, do
         // increment here because pre_trade_check fires far more often than
         // actual REST traffic (the strategy evaluates every books5 tick).
         std::lock_guard<std::mutex> lk(mu_);
-        // Trim stale entries before reading the count.
+        // Trim stale entries before reading the count. Gates the ORDER window.
         const auto cutoff = now - kRateWindow;
-        while (!attempt_times_.empty() && attempt_times_.front() < cutoff) {
-            attempt_times_.pop_front();
+        while (!order_times_.empty() && order_times_.front() < cutoff) {
+            order_times_.pop_front();
         }
-        if (static_cast<int>(attempt_times_.size()) > cfg_.risk.rate_limit_threshold) {
+        if (static_cast<int>(order_times_.size()) > cfg_.risk.rate_limit_threshold) {
             result = RiskResult::REJECTED_RATE;
         }
         // 5. Daily loss.

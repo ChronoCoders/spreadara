@@ -61,8 +61,11 @@ else
 fi
 
 # 4. Postgres connectivity.
+# WHY: pass the DSN via PGDATABASE (libpq treats a conninfo/URI in that slot as
+# a full connection string) instead of as a psql argument, so the embedded
+# password is not exposed in `ps aux` / the process command line.
 if [[ -n "${SPREADARA_PG_DSN:-}" ]]; then
-    if [[ "$(psql "${SPREADARA_PG_DSN}" -c 'SELECT 1' -t -A 2>/dev/null || echo '')" == "1" ]]; then
+    if [[ "$(PGDATABASE="${SPREADARA_PG_DSN}" psql -c 'SELECT 1' -t -A 2>/dev/null || echo '')" == "1" ]]; then
         pass "postgres"
     else
         fail "postgres" "psql probe returned non-1"

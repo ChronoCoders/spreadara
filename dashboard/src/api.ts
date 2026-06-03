@@ -121,20 +121,226 @@ export interface SystemStatus {
 }
 
 
-async function getJSON<T>(path: string): Promise<T> {
-  const r = await fetch(`${API_BASE}${path}`);
-  if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
-  return r.json();
+// Thrown when a REST payload is missing a required field or a field has the
+// wrong primitive type. Extends Error so existing page `.catch(markError)`
+// handlers flag the page as stale/errored — a malformed response is just as
+// dangerous as a frozen one for a trade-actionable view.
+export class ApiValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ApiValidationError';
+  }
 }
 
-async function postJSON<T>(path: string, body?: unknown): Promise<T> {
+// --- Lightweight, hand-rolled runtime validators ---------------------------
+// Each asserts the primitive type of a required field, throwing
+// ApiValidationError on a missing/mismatched value. They keep parsing DRY
+// without pulling in a runtime schema dependency.
+
+function asObject(v: unknown, ctx: string): Record<string, unknown> {
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) {
+    throw new ApiValidationError(`${ctx}: expected object`);
+  }
+  return v as Record<string, unknown>;
+}
+
+function asNumber(v: unknown, field: string): number {
+  if (typeof v !== 'number' || Number.isNaN(v)) {
+    throw new ApiValidationError(`field "${field}": expected number`);
+  }
+  return v;
+}
+
+function asString(v: unknown, field: string): string {
+  if (typeof v !== 'string') {
+    throw new ApiValidationError(`field "${field}": expected string`);
+  }
+  return v;
+}
+
+function asBoolean(v: unknown, field: string): boolean {
+  if (typeof v !== 'boolean') {
+    throw new ApiValidationError(`field "${field}": expected boolean`);
+  }
+  return v;
+}
+
+function asArray(v: unknown, ctx: string): unknown[] {
+  if (!Array.isArray(v)) {
+    throw new ApiValidationError(`${ctx}: expected array`);
+  }
+  return v;
+}
+
+// Optional number: pass through undefined/missing, validate type otherwise.
+function optNumber(v: unknown, field: string): number | undefined {
+  if (v === undefined || v === null) return undefined;
+  return asNumber(v, field);
+}
+
+function optBoolean(v: unknown, field: string): boolean | undefined {
+  if (v === undefined || v === null) return undefined;
+  return asBoolean(v, field);
+}
+
+// --- Per-interface parsers -------------------------------------------------
+
+function parseSnapshot(raw: unknown): Snapshot {
+  const o = asObject(raw, 'Snapshot');
+  return {
+    ts_ns: asNumber(o.ts_ns, 'ts_ns'),
+    inventory: asNumber(o.inventory, 'inventory'),
+    avg_entry: asNumber(o.avg_entry, 'avg_entry'),
+    realized_pnl: asNumber(o.realized_pnl, 'realized_pnl'),
+    unrealized_pnl: asNumber(o.unrealized_pnl, 'unrealized_pnl'),
+    total_fees: asNumber(o.total_fees, 'total_fees'),
+    mid_price: asNumber(o.mid_price, 'mid_price'),
+    cum_total: asNumber(o.cum_total, 'cum_total'),
+    gamma: optNumber(o.gamma, 'gamma'),
+    k: optNumber(o.k, 'k'),
+    t: optNumber(o.t, 't'),
+  };
+}
+
+function parseTrade(raw: unknown): Trade {
+  const o = asObject(raw, 'Trade');
+  return {
+    ts_ns: asNumber(o.ts_ns, 'ts_ns'),
+    order_id: asString(o.order_id, 'order_id'),
+    side: asNumber(o.side, 'side'),
+    price: asNumber(o.price, 'price'),
+    qty: asNumber(o.qty, 'qty'),
+    fee: asNumber(o.fee, 'fee'),
+    fee_asset: asString(o.fee_asset, 'fee_asset'),
+    is_maker: optBoolean(o.is_maker, 'is_maker'),
+  };
+}
+
+function parseSpreadPoint(raw: unknown): SpreadPoint {
+  const o = asObject(raw, 'SpreadPoint');
+  return {
+    ts_ns: asNumber(o.ts_ns, 'ts_ns'),
+    spread_bps: asNumber(o.spread_bps, 'spread_bps'),
+  };
+}
+
+function parseInventoryPoint(raw: unknown): InventoryPoint {
+  const o = asObject(raw, 'InventoryPoint');
+  return {
+    ts_ns: asNumber(o.ts_ns, 'ts_ns'),
+    inventory: asNumber(o.inventory, 'inventory'),
+    mid_price: asNumber(o.mid_price, 'mid_price'),
+  };
+}
+
+function parseSystemStatus(raw: unknown): SystemStatus {
+  const o = asObject(raw, 'SystemStatus');
+  // ws_streams is a string->string map; shallow-check it's an object.
+  const ws_streams = asObject(o.ws_streams, 'ws_streams') as Record<string, string>;
+  return {
+    exchange: asString(o.exchange, 'exchange'),
+    ws_streams,
+    uptime_seconds: asNumber(o.uptime_seconds, 'uptime_seconds'),
+    last_event_ts_ns: asNumber(o.last_event_ts_ns, 'last_event_ts_ns'),
+    halted: asBoolean(o.halted, 'halted'),
+    ws_connected: asBoolean(o.ws_connected, 'ws_connected'),
+    pg_connected: asBoolean(o.pg_connected, 'pg_connected'),
+    last_snapshot_age_ms: asNumber(o.last_snapshot_age_ms, 'last_snapshot_age_ms'),
+  };
+}
+
+// Maps a validator over a payload that must be an array.
+function parseArray<T>(raw: unknown, ctx: string, item: (v: unknown) => T): T[] {
+  return asArray(raw, ctx).map(item);
+}
+
+async function getJSON<T>(path: string, parse: (raw: unknown) => T): Promise<T> {
+  const r = await fetch(`${API_BASE}${path}`);
+  if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+  return parse(await r.json());
+}
+
+async function postJSON<T>(path: string, parse: (raw: unknown) => T, body?: unknown): Promise<T> {
   const r = await fetch(`${API_BASE}${path}`, {
     method: 'POST',
     headers: body !== undefined ? { 'Content-Type': 'application/json' } : undefined,
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
   if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
-  return r.json();
+  return parse(await r.json());
+}
+
+// Parser for the common { status: string } POST acknowledgement.
+function parseStatusAck(raw: unknown): { status: string } {
+  const o = asObject(raw, 'StatusAck');
+  return { status: asString(o.status, 'status') };
+}
+
+function parseSystemEvent(raw: unknown): SystemEvent {
+  const o = asObject(raw, 'SystemEvent');
+  return {
+    ts_ns: asNumber(o.ts_ns, 'ts_ns'),
+    severity: asString(o.severity, 'severity'),
+    source: asString(o.source, 'source'),
+    code: asString(o.code, 'code'),
+    msg: asString(o.msg, 'msg'),
+  };
+}
+
+function parseDailyPnl(raw: unknown): DailyPnl {
+  const o = asObject(raw, 'DailyPnl');
+  return {
+    date: asString(o.date, 'date'),
+    realized: asNumber(o.realized, 'realized'),
+    unrealized: asNumber(o.unrealized, 'unrealized'),
+    fees: asNumber(o.fees, 'fees'),
+    total: asNumber(o.total, 'total'),
+  };
+}
+
+function parseOrdersPayload(raw: unknown): OrdersPayload {
+  const o = asObject(raw, 'OrdersPayload');
+  return {
+    open_count: asNumber(o.open_count, 'open_count'),
+    events: parseArray(o.events, 'OrdersPayload.events', parseSystemEvent),
+  };
+}
+
+function parseFundingRate(raw: unknown): FundingRate {
+  const o = asObject(raw, 'FundingRate');
+  return {
+    funding_rate: asNumber(o.funding_rate, 'funding_rate'),
+    next_funding_time: asNumber(o.next_funding_time, 'next_funding_time'),
+    funding_rate_8h: asNumber(o.funding_rate_8h, 'funding_rate_8h'),
+  };
+}
+
+// Shallow shape check: BacktestRow is a less-critical reporting payload, so we
+// confirm it's an object and trust the field types rather than re-validating
+// every numeric column.
+function parseBacktestRow(raw: unknown): BacktestRow {
+  return asObject(raw, 'BacktestRow') as unknown as BacktestRow;
+}
+
+// Shallow shape check (see parseBacktestRow).
+function parseCalibrationRow(raw: unknown): CalibrationRow {
+  return asObject(raw, 'CalibrationRow') as unknown as CalibrationRow;
+}
+
+// Shallow shape check: enabled flag and id/name validated, rest trusted.
+function parseAlertRule(raw: unknown): AlertRule {
+  return asObject(raw, 'AlertRule') as unknown as AlertRule;
+}
+
+function parseLogsResponse(raw: unknown): LogsResponse {
+  const o = asObject(raw, 'LogsResponse');
+  const lines = asArray(o.lines, 'LogsResponse.lines').map((l, i) =>
+    asString(l, `lines[${i}]`),
+  );
+  return {
+    lines,
+    total_lines: asNumber(o.total_lines, 'total_lines'),
+  };
 }
 
 async function postText(path: string, body: string): Promise<{ status: string }> {
@@ -144,7 +350,7 @@ async function postText(path: string, body: string): Promise<{ status: string }>
     body,
   });
   if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
-  return r.json();
+  return parseStatusAck(await r.json());
 }
 
 async function getText(path: string): Promise<string> {
@@ -159,32 +365,46 @@ async function del(path: string): Promise<void> {
 }
 
 export const api = {
-  snapshot: () => getJSON<Snapshot>('/api/snapshot'),
-  trades: (limit = 100) => getJSON<Trade[]>(`/api/trades?limit=${limit}`),
-  daily: () => getJSON<DailyPnl[]>('/api/pnl/daily'),
-  events: (limit = 100) => getJSON<SystemEvent[]>(`/api/events?limit=${limit}`),
-  spreads: (limit = 1000) => getJSON<SpreadPoint[]>(`/api/spreads?limit=${limit}`),
-  inventory: (limit = 1000) => getJSON<InventoryPoint[]>(`/api/inventory?limit=${limit}`),
-  orders: (limit = 50) => getJSON<OrdersPayload>(`/api/orders?limit=${limit}`),
-  fundingRate: () => getJSON<FundingRate>('/api/funding-rate'),
-  calibration: () => getJSON<CalibrationRow[]>('/api/calibration'),
-  calibrationRun: () => postJSON<{ status: string }>('/api/calibration/run'),
-  backtest: () => getJSON<BacktestRow[]>('/api/backtest'),
-  backtestRun: () => postJSON<{ status: string }>('/api/backtest/run'),
-  status: () => getJSON<SystemStatus>('/api/v5/status'),
-  alerts: () => getJSON<AlertRule[]>('/api/alerts'),
-  alertUpsert: (rule: AlertRule) => postJSON<AlertRule>('/api/alerts', rule),
+  snapshot: () => getJSON('/api/snapshot', parseSnapshot),
+  trades: (limit = 100) =>
+    getJSON(`/api/trades?limit=${limit}`, (r) => parseArray(r, 'Trade[]', parseTrade)),
+  daily: () => getJSON('/api/pnl/daily', (r) => parseArray(r, 'DailyPnl[]', parseDailyPnl)),
+  events: (limit = 100) =>
+    getJSON(`/api/events?limit=${limit}`, (r) => parseArray(r, 'SystemEvent[]', parseSystemEvent)),
+  spreads: (limit = 1000) =>
+    getJSON(`/api/spreads?limit=${limit}`, (r) => parseArray(r, 'SpreadPoint[]', parseSpreadPoint)),
+  inventory: (limit = 1000) =>
+    getJSON(`/api/inventory?limit=${limit}`, (r) =>
+      parseArray(r, 'InventoryPoint[]', parseInventoryPoint),
+    ),
+  orders: (limit = 50) => getJSON(`/api/orders?limit=${limit}`, parseOrdersPayload),
+  fundingRate: () => getJSON('/api/funding-rate', parseFundingRate),
+  calibration: () =>
+    getJSON('/api/calibration', (r) => parseArray(r, 'CalibrationRow[]', parseCalibrationRow)),
+  calibrationRun: () => postJSON('/api/calibration/run', parseStatusAck),
+  backtest: () =>
+    getJSON('/api/backtest', (r) => parseArray(r, 'BacktestRow[]', parseBacktestRow)),
+  backtestRun: () => postJSON('/api/backtest/run', parseStatusAck),
+  status: () => getJSON('/api/v5/status', parseSystemStatus),
+  alerts: () => getJSON('/api/alerts', (r) => parseArray(r, 'AlertRule[]', parseAlertRule)),
+  alertUpsert: (rule: AlertRule) => postJSON('/api/alerts', parseAlertRule, rule),
   alertDelete: (id: string) => del(`/api/alerts?id=${encodeURIComponent(id)}`),
-  logs: (lines = 200) => getJSON<LogsResponse>(`/api/logs?lines=${lines}`),
+  logs: (lines = 200) => getJSON(`/api/logs?lines=${lines}`, parseLogsResponse),
   configGet: () => getText('/api/config'),
   configSave: (content: string) => postText('/api/config', content),
 };
 
 export type WsState = 'connected' | 'disconnected';
 
+// Reconnect backoff: delay = WS_BASE_DELAY_MS * 2^attempt + random(0, WS_BASE_DELAY_MS),
+// capped at WS_MAX_DELAY_MS. The random term de-syncs simultaneous clients so a
+// server bounce doesn't trigger a thundering-herd reconnect in lockstep.
+const WS_BASE_DELAY_MS = 250;
+const WS_MAX_DELAY_MS = 5000;
+
 export class WebSocketClient {
   private ws: WebSocket | null = null;
-  private backoff = 250;
+  private attempt = 0;
   private closed = false;
   public state: WsState = 'disconnected';
   constructor(
@@ -229,7 +449,7 @@ export class WebSocketClient {
       this.scheduleReconnect();
       return;
     }
-    this.ws.onopen = () => { this.backoff = 250; this.setState('connected'); };
+    this.ws.onopen = () => { this.attempt = 0; this.setState('connected'); };
     this.ws.onmessage = (e) => {
       try { this.onMessage(JSON.parse(e.data)); } catch { /* ignore */ }
     };
@@ -239,8 +459,10 @@ export class WebSocketClient {
 
   private scheduleReconnect() {
     if (this.closed) return;
-    const d = this.backoff;
-    this.backoff = Math.min(this.backoff * 2, 5000);
+    const exp = Math.min(WS_BASE_DELAY_MS * 2 ** this.attempt, WS_MAX_DELAY_MS);
+    const jitter = Math.random() * WS_BASE_DELAY_MS;
+    const d = Math.min(exp + jitter, WS_MAX_DELAY_MS);
+    this.attempt += 1;
     setTimeout(() => this.open(), d);
   }
 }

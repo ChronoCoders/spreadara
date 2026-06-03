@@ -124,7 +124,8 @@ void TickProcessor::process_event(const MarketEvent& ev) {
 
 void TickProcessor::emit_snapshot(uint64_t exchange_ts_ms) {
     if (!book_.has_data()) return;
-    flatbuffers::FlatBufferBuilder fbb(256);
+    fbb_.Clear();
+    auto& fbb = fbb_;
     auto snap = schemas::CreateMarketSnapshot(
         fbb,
         mono_ns(),

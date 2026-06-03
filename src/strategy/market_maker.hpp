@@ -6,6 +6,8 @@
 #include <chrono>
 #include <cstdint>
 
+#include <flatbuffers/flatbuffers.h>
+
 #include "infra/config.hpp"
 #include "strategy/inventory_manager.hpp"
 #include "strategy/signal_aggregator.hpp"
@@ -81,6 +83,10 @@ private:
 
     risk::RiskManager* risk_{nullptr};
     risk::CircuitBreaker* cb_{nullptr};
+
+    // Reused across quotes (strategy thread only) — Clear() between emits
+    // avoids a per-quote builder allocation. See emit_quote.
+    flatbuffers::FlatBufferBuilder fbb_{128};
 };
 
 }

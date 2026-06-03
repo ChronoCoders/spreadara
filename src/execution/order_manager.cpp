@@ -130,23 +130,27 @@ void OrderManager::quote_loop() {
             const uint64_t now_ns = static_cast<uint64_t>(
                 std::chrono::duration_cast<std::chrono::nanoseconds>(
                     std::chrono::steady_clock::now().time_since_epoch()).count());
-            const uint64_t ack_to_ns =
-                static_cast<uint64_t>(cfg_.execution.ack_timeout_ms) * 1'000'000ULL;
-            std::lock_guard<std::mutex> lk(mu_);
-            for (int i = 0; i < 2; ++i) {
-                auto& s = slots_[i];
-                if (s.active && s.state == OrderState::SUBMITTED &&
-                    s.submit_ts_ns != 0 && (now_ns - s.submit_ts_ns) > ack_to_ns) {
-                    spdlog::warn("order_ack_timeout cid={} side={} elapsed_ms={}",
-                                 s.client_order_id, static_cast<int>(s.side),
-                                 (now_ns - s.submit_ts_ns) / 1'000'000ULL);
-                    cancel_slot(i);
-                }
-            }
+            check_ack_timeouts(now_ns);
             // WHY: don't busy-spin on an empty quote ring; watchdog only
             // needs ~ack_timeout granularity. 10ms keeps wake latency low
             // while freeing the core for other work.
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+    }
+}
+
+void OrderManager::check_ack_timeouts(uint64_t now_ns) {
+    const uint64_t ack_to_ns =
+        static_cast<uint64_t>(cfg_.execution.ack_timeout_ms) * 1'000'000ULL;
+    std::lock_guard<std::mutex> lk(mu_);
+    for (int i = 0; i < 2; ++i) {
+        auto& s = slots_[i];
+        if (s.active && s.state == OrderState::SUBMITTED &&
+            s.submit_ts_ns != 0 && (now_ns - s.submit_ts_ns) > ack_to_ns) {
+            spdlog::warn("order_ack_timeout cid={} side={} elapsed_ms={}",
+                         s.client_order_id, static_cast<int>(s.side),
+                         (now_ns - s.submit_ts_ns) / 1'000'000ULL);
+            cancel_slot(i);
         }
     }
 }
@@ -305,29 +309,44 @@ double OrderManager::latency_p99_us() const {
 bool OrderManager::cancel_slot(int slot_idx) {
     auto& s = slots_[slot_idx];
     if (!s.active) return true;
-    rm_.record_submission();
-    CancelAck c = rest_.cancel_order(s.client_order_id, s.exchange_order_id);
-    if (c.ok) {
-        transition(slot_idx, OrderState::CANCELED);
-        s.active = false;
-        sync_open_orders();
-        return true;
+    // Bounded retry: a transient cancel failure must not leave a live order on
+    // the exchange. After kMaxCancelAttempts non-idempotent failures we escalate
+    // to the breaker rather than spin or silently abandon the order.
+    constexpr int kMaxCancelAttempts = 3;
+    CancelAck c{};
+    for (int attempt = 1; attempt <= kMaxCancelAttempts; ++attempt) {
+        rm_.record_cancel();
+        c = rest_.cancel_order(s.client_order_id, s.exchange_order_id);
+        if (c.ok) {
+            transition(slot_idx, OrderState::CANCELED);
+            s.active = false;
+            sync_open_orders();
+            return true;
+        }
+        // WHY: 51400 (OKX) and -2011 (Binance) mean "order does not exist on the
+        // exchange" — already filled, already canceled, or never existed. This is
+        // a fill race, not a failure: the order is GONE from the exchange's
+        // perspective, so our slot must reflect that or we get stuck retrying
+        // forever. The corresponding fill (if any) is caught by reconcile.
+        if (c.exchange_code == 51400 || c.exchange_code == -2011) {
+            spdlog::info("cancel_idempotent cid={} exchange_code={} reason=already_gone",
+                         s.client_order_id, c.exchange_code);
+            transition(slot_idx, OrderState::CANCELED);
+            s.active = false;
+            sync_open_orders();
+            return true;
+        }
+        spdlog::warn("cancel_failed cid={} attempt={} http={} exchange_code={}",
+                     s.client_order_id, attempt, c.http_code, c.exchange_code);
     }
-    // WHY: 51400 (OKX) and -2011 (Binance) mean "order does not exist on the
-    // exchange" — already filled, already canceled, or never existed. This is
-    // a fill race, not a failure: the order is GONE from the exchange's
-    // perspective, so our slot must reflect that or we get stuck retrying
-    // forever. The corresponding fill (if any) is caught by reconcile.
-    if (c.exchange_code == 51400 || c.exchange_code == -2011) {
-        spdlog::info("cancel_idempotent cid={} exchange_code={} reason=already_gone",
-                     s.client_order_id, c.exchange_code);
-        transition(slot_idx, OrderState::CANCELED);
-        s.active = false;
-        sync_open_orders();
-        return true;
-    }
-    spdlog::warn("cancel_failed cid={} http={} exchange_code={}",
-                 s.client_order_id, c.http_code, c.exchange_code);
+    // Persistent non-idempotent failure: escalate to the breaker so it halts
+    // and flattens, and drop the slot's active flag so we don't keep retrying
+    // a wedged order forever.
+    spdlog::critical("cancel_failed_persistent cid={} attempts={} http={} exchange_code={}",
+                     s.client_order_id, kMaxCancelAttempts, c.http_code, c.exchange_code);
+    cb_.notify_exception("cancel_failed_persistent");
+    s.active = false;
+    sync_open_orders();
     return false;
 }
 
@@ -383,7 +402,8 @@ bool OrderManager::inject_fill(const risk::FillInput& f) {
         }
     }
     std::lock_guard<std::mutex> lk(mu_);
-    flatbuffers::FlatBufferBuilder fbb(128);
+    fbb_.Clear();
+    auto& fbb = fbb_;
     auto oid = fbb.CreateString(f.order_id);
     auto sym = fbb.CreateString(f.symbol);
     auto fa = fbb.CreateString(f.fee_asset);
@@ -459,7 +479,20 @@ void OrderManager::cancel_and_flatten_locked(int& cancelled_out, bool& flattened
             if (cancel_slot(i)) ++cancelled_out;
         }
     }
-    const double inv = pt_.current_inventory();
+    // WHY: size the flatten from the exchange's authoritative position, not
+    // pt_.current_inventory() which lags fills still queued in fill_ring_. A
+    // stale size could leave a residual after we log "flattened". Fall back to
+    // local inventory (with a WARN) only if the position query fails.
+    double inv = pt_.current_inventory();
+    const auto ps = rest_.query_positions();
+    if (ps.ok) {
+        double net = 0.0;
+        for (const auto& p : ps.positions) net += p.position_amt;
+        inv = net;
+    } else {
+        spdlog::warn("flatten_position_query_failed http={} fallback_local_inv={:.8f}",
+                     ps.http_code, inv);
+    }
     if (std::fabs(inv) > cfg_.execution.flatten_threshold) {
         const char* side = inv > 0 ? "SELL" : "BUY";
         const double qty = std::fabs(inv);

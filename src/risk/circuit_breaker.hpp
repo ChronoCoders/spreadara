@@ -95,6 +95,7 @@ private:
     bool dd_active_{false};
     bool unhedged_active_{false};
     bool rej_active_{false};
+    bool daily_loss_active_{false};
 
     // External-thread trigger queue, drained on each monitor tick.
     std::mutex pending_mu_;

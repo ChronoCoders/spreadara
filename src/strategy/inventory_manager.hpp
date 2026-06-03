@@ -33,6 +33,12 @@ public:
 
 private:
     const infra::Config& cfg_;
+    // Single-writer by construction: only the strategy thread touches this
+    // field (via apply_fill and the skew/unwind readers above), so it needs no
+    // synchronization. NOTE: PositionTracker is the authoritative runtime
+    // inventory — it is fed from fills through OrderManager's fill ring. This
+    // field backs only the strategy's skew/emergency-unwind math and must be
+    // driven by apply_fill to reflect real inventory.
     double current_inventory_{0.0};
 };
 

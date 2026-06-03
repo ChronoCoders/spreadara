@@ -207,3 +207,32 @@ TEST(CircuitBreaker, ConsecutiveRejections) {
     cb.tick_for_test();
     EXPECT_TRUE(cb.halted());
 }
+
+TEST(RiskManager, PositionLimitExactBoundary) {
+    auto cfg = make_cfg();  // max_position 0.1, max_order_size 0.05
+    risk::PositionTracker pt;
+    ASSERT_TRUE(pt.apply_fill(buy(100.0, 0.06)));  // inventory 0.06
+    risk::RiskManager rm(cfg, pt);
+    // Projected 0.06 + 0.04 = 0.10 == max_position → approved at the boundary.
+    EXPECT_EQ(rm.pre_trade_check(+0.04, 100.0, 100.0), risk::RiskResult::APPROVED);
+    // One step over the cap → rejected.
+    EXPECT_EQ(rm.pre_trade_check(+0.041, 100.0, 100.0), risk::RiskResult::REJECTED_POSITION);
+}
+
+TEST(CircuitBreaker, DailyLossHalt) {
+    auto cfg = make_cfg();  // max_daily_loss 500
+    risk::PositionTracker pt;
+    risk::RiskManager rm(cfg, pt);
+    risk::RiskEventRing ring;
+    risk::CircuitBreaker cb(cfg, pt, rm, &ring);
+
+    // Just under the limit: no halt.
+    pt.set_realized_pnl_for_test(-cfg.risk.max_daily_loss + 1.0);
+    cb.tick_for_test();
+    EXPECT_FALSE(cb.halted());
+
+    // Exactly at the limit: trips halt (which drives on_halt → cancel+flatten).
+    pt.set_realized_pnl_for_test(-cfg.risk.max_daily_loss);
+    cb.tick_for_test();
+    EXPECT_TRUE(cb.halted());
+}

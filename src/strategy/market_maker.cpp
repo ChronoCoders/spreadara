@@ -66,7 +66,8 @@ void MarketMaker::emit_quote(double bid, double ask, double inv, double skew_bps
     const uint64_t ts_ns = static_cast<uint64_t>(
         std::chrono::duration_cast<std::chrono::nanoseconds>(tp.time_since_epoch()).count());
 
-    flatbuffers::FlatBufferBuilder fbb(128);
+    fbb_.Clear();
+    auto& fbb = fbb_;
     auto q = schemas::CreateQuoteUpdate(fbb, bid, ask, cfg_.strategy.quote_qty, ts_ns, inv, skew_bps);
     fbb.Finish(q);
 

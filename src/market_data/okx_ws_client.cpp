@@ -35,6 +35,11 @@ namespace spreadara::market_data::okx {
 
 namespace {
 
+// Reusable JSON parse-buffer capacity: max expected frame + simdjson padding.
+// Lets on_read reuse one buffer instead of heap-allocating a padded_string per
+// inbound frame on the public market-data ingress path.
+constexpr std::size_t kWsParseReserve = 65536 + simdjson::SIMDJSON_PADDING;
+
 struct ParsedWsUrl {
     std::string host;
     std::string port;
@@ -108,6 +113,7 @@ public:
           on_fatal_(std::move(on_fatal)),
           backoff_ms_(cfg_.reconnect.initial_backoff_ms) {
         parser_.threaded = false;
+        parse_buf_.reserve(kWsParseReserve);
     }
 
     void run() { do_resolve(); }
@@ -249,8 +255,12 @@ private:
         }
 
         try {
-            simdjson::padded_string padded(p, n);
-            simdjson::ondemand::document doc = parser_.iterate(padded);
+            if (n + simdjson::SIMDJSON_PADDING > parse_buf_.capacity()) {
+                parse_buf_.reserve(n + simdjson::SIMDJSON_PADDING);
+            }
+            parse_buf_.assign(p, n);
+            simdjson::ondemand::document doc =
+                parser_.iterate(parse_buf_.data(), n, parse_buf_.capacity());
             dispatch(doc, ts_ns);
         } catch (const std::exception& e) {
             spdlog::warn("okx_parse_error err={}", e.what());
@@ -261,11 +271,41 @@ private:
     }
 
     void dispatch(simdjson::ondemand::document& doc, uint64_t ts_ns) {
-        // Channel comes from arg.channel; data is an array (snapshot or update).
+        // Subscribe ack / error envelopes carry an "event" field. Handle them
+        // before the channel-update path so a rejected subscription is surfaced
+        // (CRITICAL + breaker) instead of silently leaving a connected-but-
+        // dataless socket.
+        std::string_view event_sv;
+        if (doc["event"].get_string().get(event_sv) == simdjson::SUCCESS) {
+            std::string_view ch_sv;
+            if (event_sv == "error") {
+                std::string_view code_sv, msg_sv;
+                if (doc["code"].get_string().get(code_sv) != simdjson::SUCCESS) code_sv = {};
+                if (doc["msg"].get_string().get(msg_sv) != simdjson::SUCCESS) msg_sv = {};
+                auto arg = doc["arg"];
+                if (arg.error() == simdjson::SUCCESS &&
+                    arg["channel"].get_string().get(ch_sv) != simdjson::SUCCESS) {
+                    ch_sv = {};
+                }
+                spdlog::critical("okx_subscribe_error channel={} code={} msg={}",
+                                 ch_sv, code_sv, msg_sv);
+                if (on_fatal_) on_fatal_();
+            } else if (event_sv == "subscribe") {
+                auto arg = doc["arg"];
+                if (arg.error() == simdjson::SUCCESS &&
+                    arg["channel"].get_string().get(ch_sv) != simdjson::SUCCESS) {
+                    ch_sv = {};
+                }
+                spdlog::info("okx_subscribe_ok channel={}", ch_sv);
+            }
+            return;
+        }
+
+        // Channel update: arg.channel + data array.
         std::string_view channel_sv;
         {
             auto arg = doc["arg"];
-            if (arg.error() != simdjson::SUCCESS) return;  // ack/subscribe response
+            if (arg.error() != simdjson::SUCCESS) return;
             if (arg["channel"].get_string().get(channel_sv) != simdjson::SUCCESS) return;
         }
         auto data_arr = doc["data"];
@@ -415,6 +455,7 @@ private:
     ssl::context* ssl_ctx_ref_{nullptr};
     beast::flat_buffer buffer_;
     simdjson::ondemand::parser parser_;
+    std::string parse_buf_;  // reused per frame; see on_read / kWsParseReserve
     std::string host_;
     std::string port_;
     std::string path_;

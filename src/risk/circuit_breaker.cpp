@@ -107,6 +107,22 @@ void CircuitBreaker::do_tick(std::chrono::steady_clock::time_point now) {
         unhedged_active_ = false;
     }
 
+    // Daily loss — halt + flatten when total P&L breaches the cap. A pre-trade
+    // reject alone stops new orders but leaves the losing inventory open;
+    // halting trips on_halt() which cancels and flattens.
+    const double pnl = pt_.equity();  // realized + unrealized
+    if (pnl <= -cfg_.risk.max_daily_loss) {
+        if (!daily_loss_active_) {
+            daily_loss_active_ = true;
+            const std::string detail = "pnl=" + std::to_string(pnl) +
+                                       " limit=" + std::to_string(cfg_.risk.max_daily_loss);
+            set_halt_synchronously("daily_loss", detail, now_ns_wall());
+            enqueue("daily_loss", detail, now_ns_wall());
+        }
+    } else {
+        daily_loss_active_ = false;
+    }
+
     // Consecutive rejections — latch on cross, clear when count recedes.
     const int rej = rm_.consecutive_rejections_in_window(now);
     if (rej > cfg_.risk.max_consecutive_rejections) {

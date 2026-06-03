@@ -6,6 +6,8 @@
 #include <atomic>
 #include <thread>
 
+#include <flatbuffers/flatbuffers.h>
+
 #include "infra/config.hpp"
 #include "market_data/ws_types.hpp"
 #include "market_data/orderbook.hpp"
@@ -48,6 +50,9 @@ private:
     TickVolatility vol_;
     double last_trade_price_{0.0};
     double last_trade_qty_{0.0};
+    // Reused across snapshots (tick thread only) — Clear() between events
+    // avoids a per-event builder allocation. See emit_snapshot.
+    flatbuffers::FlatBufferBuilder fbb_{256};
     std::atomic<bool> running_{false};
     std::thread thread_;
 };

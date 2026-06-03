@@ -16,6 +16,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -183,6 +184,27 @@ func absF(v float64) float64 {
 	return v
 }
 
+// sanitizeURLError renders a request error without leaking the webhook URL,
+// which may embed a secret token in its path or query. *url.Error carries the
+// full URL in both its .URL field and its formatted message, so we report the
+// operation + underlying cause instead, and defensively strip any literal
+// occurrence of the URL from the result.
+func sanitizeURLError(err error, webhookURL string) string {
+	msg := err.Error()
+	var uerr *url.Error
+	if errors.As(err, &uerr) {
+		cause := "?"
+		if uerr.Err != nil {
+			cause = uerr.Err.Error()
+		}
+		msg = uerr.Op + ": " + cause
+	}
+	if webhookURL != "" {
+		msg = strings.ReplaceAll(msg, webhookURL, "[redacted]")
+	}
+	return msg
+}
+
 type alertFirer func(rule AlertRule, snap Snapshot)
 
 // defaultAlertFirer logs every fire and posts to webhook if configured.
@@ -217,7 +239,7 @@ func defaultAlertFirer(rule AlertRule, snap Snapshot) {
 	client := &http.Client{Timeout: 3 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		log.Printf("alert_webhook_post_error rule=%s: %v", rule.ID, err)
+		log.Printf("alert_webhook_post_error rule=%s: %s", rule.ID, sanitizeURLError(err, rule.WebhookURL))
 		return
 	}
 	defer resp.Body.Close()

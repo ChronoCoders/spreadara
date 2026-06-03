@@ -776,6 +776,74 @@ func TestStatusTsQueryFailure(t *testing.T) {
 	}
 }
 
+func TestRuleBreachedInventory(t *testing.T) {
+	rule := AlertRule{Type: "inventory", Threshold: 0.1}
+	if !ruleBreached(rule, Snapshot{Inventory: 0.25}) {
+		t.Errorf("inventory 0.25 should breach threshold 0.1")
+	}
+	if !ruleBreached(rule, Snapshot{Inventory: -0.25}) {
+		t.Errorf("inventory -0.25 (abs) should breach threshold 0.1")
+	}
+	if ruleBreached(rule, Snapshot{Inventory: 0.05}) {
+		t.Errorf("inventory 0.05 should not breach threshold 0.1")
+	}
+}
+
+func TestRuleBreachedPnl(t *testing.T) {
+	// Negative threshold: fire when realized P&L falls at/below it (a loss).
+	loss := AlertRule{Type: "pnl", Threshold: -100.0}
+	if !ruleBreached(loss, Snapshot{Realized: -150.0}) {
+		t.Errorf("realized -150 should breach threshold -100")
+	}
+	if ruleBreached(loss, Snapshot{Realized: -50.0}) {
+		t.Errorf("realized -50 should not breach threshold -100")
+	}
+	// Positive threshold: fire when realized P&L rises at/above it (a gain).
+	gain := AlertRule{Type: "pnl", Threshold: 100.0}
+	if !ruleBreached(gain, Snapshot{Realized: 150.0}) {
+		t.Errorf("realized 150 should breach threshold 100")
+	}
+	if ruleBreached(gain, Snapshot{Realized: 50.0}) {
+		t.Errorf("realized 50 should not breach threshold 100")
+	}
+}
+
+func TestWebhookURLBlocked(t *testing.T) {
+	blocked := []string{
+		"https://127.0.0.1/x",
+		"https://10.0.0.5/x",
+		"https://192.168.1.1/x",
+		"https://172.16.0.1/x",
+		"https://[::1]/x",
+		"http://93.184.216.34/x", // non-https
+		"",
+	}
+	for _, u := range blocked {
+		if err := validateWebhookURL(u); err == nil {
+			t.Errorf("validateWebhookURL(%q) = nil, want error", u)
+		}
+	}
+	// Public IP literal, https — must be accepted without touching DNS.
+	if err := validateWebhookURL("https://93.184.216.34/x"); err != nil {
+		t.Errorf("validateWebhookURL(public https) = %v, want nil", err)
+	}
+
+	// Handler-level: a webhook rule with a blocked URL must 400.
+	srv := newServer(&stubReader{}, 50*time.Millisecond, "")
+	srv.alerts = newAlertStore(filepath.Join(t.TempDir(), "alerts.json"))
+	ts := httptest.NewServer(srv.routes())
+	defer ts.Close()
+	body := strings.NewReader(`{"name":"hook","type":"drawdown","threshold":3.0,"channel":"webhook","webhook_url":"https://127.0.0.1/x","enabled":true}`)
+	resp, err := http.Post(ts.URL+"/api/alerts", "application/json", body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", resp.StatusCode)
+	}
+}
+
 func TestStatusPingFailure(t *testing.T) {
 	stub := &statusStub{
 		ts:      time.Now().UnixNano(),
