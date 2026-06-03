@@ -163,4 +163,4 @@ Credentials live in `/opt/spreadara/env` (mode 600), loaded by systemd via `Envi
 
 ## License
 
-Business Source License 1.1. See `LICENSE` for terms. Production use requires a commercial license from ChronoCoders; the license converts to Apache 2.0 four years after each release.
+Copyright (c) 2026 ChronoCoders. All rights reserved. This software is proprietary; no part of it may be used, copied, modified, or distributed without prior written permission from ChronoCoders. See `LICENSE` for terms.
