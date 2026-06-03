@@ -81,28 +81,22 @@ RiskResult RiskManager::pre_trade_check(double side_signed_qty, double price, do
 
     RiskResult result = RiskResult::APPROVED;
 
-    // 1. Position limit.
     const double projected_inv = inv + side_signed_qty;
     if (std::abs(projected_inv) > cfg_.risk.max_position) {
         result = RiskResult::REJECTED_POSITION;
     }
-    // 2. Order size.
     else if (abs_qty > cfg_.risk.max_order_size) {
         result = RiskResult::REJECTED_SIZE;
     }
-    // 3. Price sanity (% deviation from mid).
     else if (current_mid > 0.0 &&
              std::abs(price - current_mid) / current_mid * 100.0 > cfg_.risk.price_sanity_pct) {
         result = RiskResult::REJECTED_PRICE;
     }
     else {
-        // 4. Rate limit — READ-ONLY check against the window. The window is
-        // populated exclusively by record_submission() called from
-        // OrderManager immediately before each REST write call. We do NOT
-        // increment here because pre_trade_check fires far more often than
-        // actual REST traffic (the strategy evaluates every books5 tick).
+        // WHY: READ-ONLY check — the window is populated by record_submission()
+        // before each REST write, not here. pre_trade_check fires on every
+        // books5 tick, far more often than actual REST traffic.
         std::lock_guard<std::mutex> lk(mu_);
-        // Trim stale entries before reading the count. Gates the ORDER window.
         const auto cutoff = now - kRateWindow;
         while (!order_times_.empty() && order_times_.front() < cutoff) {
             order_times_.pop_front();
@@ -110,11 +104,9 @@ RiskResult RiskManager::pre_trade_check(double side_signed_qty, double price, do
         if (static_cast<int>(order_times_.size()) > cfg_.risk.rate_limit_threshold) {
             result = RiskResult::REJECTED_RATE;
         }
-        // 5. Daily loss.
         else if (equity < -cfg_.risk.max_daily_loss) {
             result = RiskResult::REJECTED_LOSS;
         }
-        // 6. Open orders.
         else if (open_orders >= cfg_.risk.max_open_orders) {
             result = RiskResult::REJECTED_OPEN_ORDERS;
         }

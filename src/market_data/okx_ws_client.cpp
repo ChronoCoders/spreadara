@@ -35,9 +35,6 @@ namespace spreadara::market_data::okx {
 
 namespace {
 
-// Reusable JSON parse-buffer capacity: max expected frame + simdjson padding.
-// Lets on_read reuse one buffer instead of heap-allocating a padded_string per
-// inbound frame on the public market-data ingress path.
 constexpr std::size_t kWsParseReserve = 65536 + simdjson::SIMDJSON_PADDING;
 
 struct ParsedWsUrl {
@@ -301,7 +298,6 @@ private:
             return;
         }
 
-        // Channel update: arg.channel + data array.
         std::string_view channel_sv;
         {
             auto arg = doc["arg"];

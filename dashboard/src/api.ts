@@ -3,9 +3,9 @@
 
 // REST + WS client. Reconnect on disconnect with exponential backoff capped at 5s.
 
-// Empty VITE_API_BASE means same-origin (relative paths work for fetch).
-// Empty VITE_WS_BASE falls back to window.location because WebSocket requires
-// an absolute URL — relative ws:// paths are not valid.
+// WHY: WebSocket requires an absolute URL; relative ws:// paths are invalid.
+// When VITE_WS_BASE is empty, derive from window.location so the Vite dev
+// proxy (or a same-origin reverse proxy) handles the upgrade transparently.
 const API_BASE = (import.meta as any).env?.VITE_API_BASE ?? 'http://localhost:8080';
 const _wsEnv: string = (import.meta as any).env?.VITE_WS_BASE ?? '';
 const WS_BASE = _wsEnv || (() => {
@@ -125,21 +125,12 @@ export interface SystemStatus {
 }
 
 
-// Thrown when a REST payload is missing a required field or a field has the
-// wrong primitive type. Extends Error so existing page `.catch(markError)`
-// handlers flag the page as stale/errored — a malformed response is just as
-// dangerous as a frozen one for a trade-actionable view.
 export class ApiValidationError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'ApiValidationError';
   }
 }
-
-// --- Lightweight, hand-rolled runtime validators ---------------------------
-// Each asserts the primitive type of a required field, throwing
-// ApiValidationError on a missing/mismatched value. They keep parsing DRY
-// without pulling in a runtime schema dependency.
 
 function asObject(v: unknown, ctx: string): Record<string, unknown> {
   if (typeof v !== 'object' || v === null || Array.isArray(v)) {
@@ -176,7 +167,6 @@ function asArray(v: unknown, ctx: string): unknown[] {
   return v;
 }
 
-// Optional number: pass through undefined/missing, validate type otherwise.
 function optNumber(v: unknown, field: string): number | undefined {
   if (v === undefined || v === null) return undefined;
   return asNumber(v, field);
@@ -186,8 +176,6 @@ function optBoolean(v: unknown, field: string): boolean | undefined {
   if (v === undefined || v === null) return undefined;
   return asBoolean(v, field);
 }
-
-// --- Per-interface parsers -------------------------------------------------
 
 function parseSnapshot(raw: unknown): Snapshot {
   const o = asObject(raw, 'Snapshot');
@@ -239,7 +227,6 @@ function parseInventoryPoint(raw: unknown): InventoryPoint {
 
 function parseSystemStatus(raw: unknown): SystemStatus {
   const o = asObject(raw, 'SystemStatus');
-  // ws_streams is a string->string map; shallow-check it's an object.
   const ws_streams = asObject(o.ws_streams, 'ws_streams') as Record<string, string>;
   return {
     exchange: asString(o.exchange, 'exchange'),
@@ -253,7 +240,6 @@ function parseSystemStatus(raw: unknown): SystemStatus {
   };
 }
 
-// Maps a validator over a payload that must be an array.
 function parseArray<T>(raw: unknown, ctx: string, item: (v: unknown) => T): T[] {
   return asArray(raw, ctx).map(item);
 }
@@ -274,7 +260,6 @@ async function postJSON<T>(path: string, parse: (raw: unknown) => T, body?: unkn
   return parse(await r.json());
 }
 
-// Parser for the common { status: string } POST acknowledgement.
 function parseStatusAck(raw: unknown): { status: string } {
   const o = asObject(raw, 'StatusAck');
   return { status: asString(o.status, 'status') };
@@ -319,19 +304,14 @@ function parseFundingRate(raw: unknown): FundingRate {
   };
 }
 
-// Shallow shape check: BacktestRow is a less-critical reporting payload, so we
-// confirm it's an object and trust the field types rather than re-validating
-// every numeric column.
 function parseBacktestRow(raw: unknown): BacktestRow {
   return asObject(raw, 'BacktestRow') as unknown as BacktestRow;
 }
 
-// Shallow shape check (see parseBacktestRow).
 function parseCalibrationRow(raw: unknown): CalibrationRow {
   return asObject(raw, 'CalibrationRow') as unknown as CalibrationRow;
 }
 
-// Shallow shape check: enabled flag and id/name validated, rest trusted.
 function parseAlertRule(raw: unknown): AlertRule {
   return asObject(raw, 'AlertRule') as unknown as AlertRule;
 }

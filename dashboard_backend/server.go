@@ -528,9 +528,7 @@ type server struct {
 	alertFire  alertFirer
 	logPath    string
 	configPath string
-	// configMu serializes POST /api/config so concurrent writes can't
-	// interleave the backup + temp-file + rename sequence.
-	configMu sync.Mutex
+	configMu   sync.Mutex
 
 	// v0.12 additions: backtest results CSV + run forker. Mirrors the
 	// calibration pattern.
@@ -972,16 +970,8 @@ func (s *server) handleInventory(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, pts)
 }
 
-// maxAlertBodyBytes caps the POST /api/alerts request body. A rule is a few
-// short fields, so anything larger is malformed or abusive.
 const maxAlertBodyBytes = 4096
 
-// validateWebhookURL enforces that an alert webhook target is an https URL
-// pointing at a public address. It rejects non-https schemes and any host
-// that is (or resolves to) a loopback, private (RFC 1918 / ULA), or
-// link-local address — the SSRF guard. IP-literal hosts are checked directly
-// so the IP path is testable without DNS; named hosts are resolved with
-// net.LookupIP and rejected if ANY resolved address is non-public.
 func validateWebhookURL(raw string) error {
 	if raw == "" {
 		return errors.New("empty url")
@@ -1012,8 +1002,6 @@ func validateWebhookURL(raw string) error {
 	return nil
 }
 
-// checkPublicIP returns an error if ip is loopback, private, link-local,
-// unspecified, or otherwise not safely routable to a public webhook.
 func checkPublicIP(ip net.IP) error {
 	if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() ||
 		ip.IsLinkLocalMulticast() || ip.IsUnspecified() {
@@ -1068,16 +1056,8 @@ func (s *server) handleAlerts(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// logTailWindow bounds how many bytes from the end of the log file we read to
-// satisfy a tail request, so memory stays constant regardless of file size.
-// At ~200 bytes/line this comfortably covers the 1000-line request cap.
 const logTailWindow = 1 << 20
 
-// handleLogs tails the trading binary's log file. It reads only the last
-// logTailWindow bytes from the end of the file (never the whole thing), then
-// returns the last `lines` rows. TotalLines is the count of lines within the
-// read window, so for files larger than the window it is a lower-bound
-// estimate rather than the true file-wide total.
 func (s *server) handleLogs(w http.ResponseWriter, r *http.Request) {
 	s.cors(w, r)
 	if r.Method == http.MethodOptions {
@@ -1096,11 +1076,6 @@ func (s *server) handleLogs(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, LogsResponse{Lines: all, TotalLines: total})
 }
 
-// tailLines returns the last n lines of the file at path plus the number of
-// lines seen within the read window. It seeks to max(0, size-logTailWindow)
-// and reads forward, so only a bounded tail is held in memory. When the read
-// starts mid-file (size > window) the first, possibly-partial line is dropped
-// so callers never see a truncated record.
 func tailLines(path string, n int) ([]string, int, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -1190,8 +1165,6 @@ func (s *server) handleConfig(w http.ResponseWriter, r *http.Request) {
 				log.Printf("config_backup_failed: %v", werr)
 			}
 		}
-		// Atomic replace: write to a temp file in the same directory, then
-		// rename over the target so a crash mid-write can't truncate config.
 		if err := atomicWriteFile(s.configPath, body); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -1202,9 +1175,6 @@ func (s *server) handleConfig(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// atomicWriteFile writes data to a temp file in the target's directory and
-// renames it over path, so a reader never observes a partially-written file.
-// The temp file is removed on any error before the rename succeeds.
 func atomicWriteFile(path string, data []byte) error {
 	dir := filepath.Dir(path)
 	tmp, err := os.CreateTemp(dir, ".config-*.tmp")
@@ -1400,11 +1370,6 @@ func readCalibrationCSV(path string) ([]CalibrationRow, error) {
 	return out, nil
 }
 
-// collapseEvents deduplicates consecutive runs of identical events.
-// Events are matched on (Severity, Source, Msg). Runs longer than
-// collapseThreshold within the same 1-second wall-clock bucket are
-// collapsed into a single entry; its Msg gains a " (×N)" suffix and
-// at most one collapsed entry per unique key per second survives.
 const collapseThreshold = 3
 
 func collapseEvents(evs []SystemEvent) []SystemEvent {
@@ -1426,7 +1391,6 @@ func collapseEvents(evs []SystemEvent) []SystemEvent {
 		if n == 1 {
 			out = append(out, e)
 		} else if n == collapseThreshold+1 {
-			// Annotate the already-appended representative entry.
 			out[len(out)-1].Msg = e.Msg + " (×" + strconv.Itoa(n) + ")"
 		} else if n > collapseThreshold+1 {
 			out[len(out)-1].Msg = e.Msg + " (×" + strconv.Itoa(n) + ")"

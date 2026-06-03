@@ -40,9 +40,6 @@ namespace spreadara::market_data::okx {
 
 namespace {
 
-// Reusable JSON parse-buffer capacity: max expected frame + simdjson padding.
-// Lets on_read reuse one buffer instead of heap-allocating a padded_string per
-// inbound frame.
 constexpr std::size_t kWsParseReserve = 65536 + simdjson::SIMDJSON_PADDING;
 
 struct ParsedWsUrl {
@@ -349,8 +346,6 @@ private:
     // server does not initiate pings on the private channel the way it does
     // on public (where book updates keep traffic flowing), so we send our
     // own literal 4-byte "ping" frame every 25s. Re-armed after each tick.
-    // Armed at ws-handshake; cancelled on disconnect/stop and re-armed by the
-    // next handshake on reconnect.
     void arm_ping_timer() {
         if (stopping_.load(std::memory_order_acquire)) return;
         ping_timer_.expires_after(std::chrono::seconds(25));

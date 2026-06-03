@@ -50,14 +50,12 @@ public:
     void set_open_order_count(int n) { open_order_count_.store(n, std::memory_order_release); }
     int open_order_count() const { return open_order_count_.load(std::memory_order_acquire); }
 
-    // Number of rejections recorded in the last 30 seconds.
     int consecutive_rejections_in_window(std::chrono::steady_clock::time_point now);
 
     // WHY: optional hook. nullptr by default keeps existing tests intact.
     void set_reporter(db::PgReporter* r) { reporter_ = r; }
 
 private:
-    // Trim entries older than the window and append tp. Caller holds mu_.
     void record_in(std::deque<std::chrono::steady_clock::time_point>& bucket,
                    std::chrono::steady_clock::time_point tp);
     void record_rejection(std::chrono::steady_clock::time_point tp);
@@ -66,7 +64,6 @@ private:
     PositionTracker& pt_;
 
     std::mutex mu_;
-    // Separate per-endpoint rate windows (see record_submission/record_cancel).
     std::deque<std::chrono::steady_clock::time_point> order_times_;
     std::deque<std::chrono::steady_clock::time_point> cancel_times_;
     std::deque<std::chrono::steady_clock::time_point> rejection_times_;

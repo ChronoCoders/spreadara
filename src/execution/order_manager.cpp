@@ -126,7 +126,6 @@ void OrderManager::quote_loop() {
                 on_quote(bid, ask, qty);
             }
         } else {
-            // Watchdog on every idle tick: ack-timeout per slot.
             const uint64_t now_ns = static_cast<uint64_t>(
                 std::chrono::duration_cast<std::chrono::nanoseconds>(
                     std::chrono::steady_clock::now().time_since_epoch()).count());
@@ -339,9 +338,6 @@ bool OrderManager::cancel_slot(int slot_idx) {
         spdlog::warn("cancel_failed cid={} attempt={} http={} exchange_code={}",
                      s.client_order_id, attempt, c.http_code, c.exchange_code);
     }
-    // Persistent non-idempotent failure: escalate to the breaker so it halts
-    // and flattens, and drop the slot's active flag so we don't keep retrying
-    // a wedged order forever.
     spdlog::critical("cancel_failed_persistent cid={} attempts={} http={} exchange_code={}",
                      s.client_order_id, kMaxCancelAttempts, c.http_code, c.exchange_code);
     cb_.notify_exception("cancel_failed_persistent");
@@ -411,7 +407,6 @@ bool OrderManager::inject_fill(const risk::FillInput& f) {
                                        f.fee, fa, f.timestamp_ns);
     fbb.Finish(ev);
 
-    // Update the matching slot's executed qty + state.
     for (auto& s : slots_) {
         if (s.active && s.client_order_id == f.order_id) {
             s.executed_qty += f.qty;
