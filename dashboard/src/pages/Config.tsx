@@ -97,6 +97,8 @@ export default function Config() {
         <div className="panel" style={{ height: '100%' }}>
           {editing ? (
             <textarea
+              id="config-editor"
+              name="config-editor"
               value={content}
               onChange={(e) => setContent(e.target.value)}
               spellCheck={false}

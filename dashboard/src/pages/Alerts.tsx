@@ -75,10 +75,10 @@ export default function Alerts() {
           <div className="panel-header"><span>ADD RULE</span></div>
           <div style={{ padding: 16, display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'flex-end' }}>
             <Field label="Name">
-              <input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="dd-5pct" />
+              <input id="alert-name" name="alert-name" className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="dd-5pct" />
             </Field>
             <Field label="Type">
-              <select className="input" value={type} onChange={(e) => setType(e.target.value as RuleType)}>
+              <select id="alert-type" name="alert-type" className="input" value={type} onChange={(e) => setType(e.target.value as RuleType)}>
                 {TYPES.map((t) => (
                   <option key={t.value} value={t.value}>{t.label}</option>
                 ))}
@@ -86,6 +86,8 @@ export default function Alerts() {
             </Field>
             <Field label="Threshold">
               <input
+                id="alert-threshold"
+                name="alert-threshold"
                 className="input"
                 type="number"
                 step="0.01"
@@ -95,7 +97,7 @@ export default function Alerts() {
               />
             </Field>
             <Field label="Channel">
-              <select className="input" value={channel} onChange={(e) => setChannel(e.target.value as Channel)}>
+              <select id="alert-channel" name="alert-channel" className="input" value={channel} onChange={(e) => setChannel(e.target.value as Channel)}>
                 <option value="log">log</option>
                 <option value="webhook">webhook</option>
               </select>
@@ -103,6 +105,8 @@ export default function Alerts() {
             {channel === 'webhook' && (
               <Field label="Webhook URL">
                 <input
+                  id="alert-webhook-url"
+                  name="alert-webhook-url"
                   className="input"
                   value={webhookUrl}
                   onChange={(e) => setWebhookUrl(e.target.value)}
