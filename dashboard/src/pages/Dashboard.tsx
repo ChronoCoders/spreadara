@@ -373,7 +373,7 @@ export default function Dashboard() {
       </div>
 
       <footer className="footer">
-        <span>SPREADARA v0.9.4 · DSLabs</span>
+        <span>SPREADARA v0.11.9 · DSLabs</span>
         <span className={`right ${wsState}`}>
           {wsState === 'connected' ? 'CONNECTED' : 'DISCONNECTED'}
         </span>

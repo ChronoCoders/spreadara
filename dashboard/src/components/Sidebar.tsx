@@ -116,7 +116,7 @@ export function Sidebar() {
           ))}
         </nav>
 
-        <div className="sidebar-version">v0.9.4</div>
+        <div className="sidebar-version">v0.11.9</div>
       </aside>
     </>
   );

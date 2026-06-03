@@ -1400,6 +1400,41 @@ func readCalibrationCSV(path string) ([]CalibrationRow, error) {
 	return out, nil
 }
 
+// collapseEvents deduplicates consecutive runs of identical events.
+// Events are matched on (Severity, Source, Msg). Runs longer than
+// collapseThreshold within the same 1-second wall-clock bucket are
+// collapsed into a single entry; its Msg gains a " (×N)" suffix and
+// at most one collapsed entry per unique key per second survives.
+const collapseThreshold = 3
+
+func collapseEvents(evs []SystemEvent) []SystemEvent {
+	if len(evs) == 0 {
+		return evs
+	}
+	type key struct {
+		sev    string
+		source string
+		msg    string
+		sec    int64
+	}
+	seen := make(map[key]int)
+	out := make([]SystemEvent, 0, len(evs))
+	for _, e := range evs {
+		k := key{e.Severity, e.Source, e.Msg, e.TsNs / 1_000_000_000}
+		seen[k]++
+		n := seen[k]
+		if n == 1 {
+			out = append(out, e)
+		} else if n == collapseThreshold+1 {
+			// Annotate the already-appended representative entry.
+			out[len(out)-1].Msg = e.Msg + " (×" + strconv.Itoa(n) + ")"
+		} else if n > collapseThreshold+1 {
+			out[len(out)-1].Msg = e.Msg + " (×" + strconv.Itoa(n) + ")"
+		}
+	}
+	return out
+}
+
 func (s *server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	s.cors(w, r)
 	if r.Method == http.MethodOptions {
@@ -1411,7 +1446,7 @@ func (s *server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, evs)
+	writeJSON(w, collapseEvents(evs))
 }
 
 // WHY: Minimal RFC 6455 server. We only send text frames (no fragmentation,

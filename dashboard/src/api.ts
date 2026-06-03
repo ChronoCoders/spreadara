@@ -3,11 +3,15 @@
 
 // REST + WS client. Reconnect on disconnect with exponential backoff capped at 5s.
 
-// Use ?? (not ||) so an explicitly-empty VITE_API_BASE/VITE_WS_BASE means
-// "same origin" (relative paths) in production rather than silently falling
-// back to a localhost dev URL.
+// Empty VITE_API_BASE means same-origin (relative paths work for fetch).
+// Empty VITE_WS_BASE falls back to window.location because WebSocket requires
+// an absolute URL — relative ws:// paths are not valid.
 const API_BASE = (import.meta as any).env?.VITE_API_BASE ?? 'http://localhost:8080';
-const WS_BASE = (import.meta as any).env?.VITE_WS_BASE ?? 'ws://localhost:8080';
+const _wsEnv: string = (import.meta as any).env?.VITE_WS_BASE ?? '';
+const WS_BASE = _wsEnv || (() => {
+  const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
+  return `${proto}://${window.location.host}`;
+})();
 
 export interface Snapshot {
   ts_ns: number;
