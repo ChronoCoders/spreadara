@@ -1,8 +1,10 @@
 // Copyright (c) 2026 ChronoCoders. All rights reserved.
 // Proprietary and confidential. Unauthorized copying or distribution is prohibited.
 
-import { BrowserRouter, Route, Routes } from 'react-router-dom';
+import { BrowserRouter, Route, Routes, Navigate, useLocation } from 'react-router-dom';
+import { useEffect, type ReactNode } from 'react';
 import { Layout } from './components/Layout';
+import { isAuthenticated, getAccessToken, refreshTokens, logout, getCurrentUser } from './auth';
 import Dashboard from './pages/Dashboard';
 import Strategy from './pages/Strategy';
 import Positions from './pages/Positions';
@@ -22,12 +24,48 @@ import Alerts from './pages/Alerts';
 import Logs from './pages/Logs';
 import Config from './pages/Config';
 import System from './pages/System';
+import Login from './pages/Login';
+import AcceptInvite from './pages/AcceptInvite';
+import AdminUsers from './pages/AdminUsers';
+
+function AuthBridge() {
+  useEffect(() => {
+    (window as any).__spreadara_getToken = getAccessToken;
+    (window as any).__spreadara_refresh = refreshTokens;
+    (window as any).__spreadara_logout = () => logout('/login');
+    return () => {
+      delete (window as any).__spreadara_getToken;
+      delete (window as any).__spreadara_refresh;
+      delete (window as any).__spreadara_logout;
+    };
+  }, []);
+  return null;
+}
+
+function RequireAuth({ children }: { children: ReactNode }) {
+  const location = useLocation();
+  if (!isAuthenticated()) {
+    return <Navigate to="/login" state={{ from: location }} replace />;
+  }
+  return <>{children}</>;
+}
+
+function RequireAdmin({ children }: { children: ReactNode }) {
+  const user = getCurrentUser();
+  if (!isAuthenticated()) return <Navigate to="/login" replace />;
+  if (user?.role !== 'admin') return <Navigate to="/" replace />;
+  return <>{children}</>;
+}
 
 export default function App() {
   return (
     <BrowserRouter>
+      <AuthBridge />
       <Routes>
-        <Route element={<Layout />}>
+        <Route path="/login" element={<Login />} />
+        <Route path="/accept-invite" element={<AcceptInvite />} />
+
+        <Route element={<RequireAuth><Layout /></RequireAuth>}>
           <Route index element={<Dashboard />} />
           <Route path="strategy" element={<Strategy />} />
           <Route path="positions" element={<Positions />} />
@@ -47,6 +85,7 @@ export default function App() {
           <Route path="logs" element={<Logs />} />
           <Route path="config" element={<Config />} />
           <Route path="system" element={<System />} />
+          <Route path="admin/users" element={<RequireAdmin><AdminUsers /></RequireAdmin>} />
         </Route>
       </Routes>
     </BrowserRouter>

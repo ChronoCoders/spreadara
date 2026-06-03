@@ -18,6 +18,7 @@ import (
 	"encoding/csv"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net"
@@ -30,6 +31,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/crypto/bcrypt"
 )
 
 // WHY: schema stores ts as nanoseconds-since-epoch BIGINT (TsNs). Clients
@@ -494,10 +497,16 @@ func (r *sqlReader) recentEvents(limit int) ([]SystemEvent, error) {
 	return out, rows.Err()
 }
 
+type contextKey int
+
+const claimsKey contextKey = 1
+
 type server struct {
 	r          dbReader
 	wsInterval time.Duration
 	corsOrigin string
+	jwtSecret  []byte
+	users      userStore
 	// Configuration surfaced via env vars and merged into responses.
 	maxOpenOrders  int
 	maxDrawdownPct float64
@@ -577,6 +586,16 @@ func newServer(r dbReader, wsInterval time.Duration, corsOrigin string) *server 
 		backtestCsv:         envStrLocal("SPREADARA_BACKTEST_CSV", "backtest_results.csv"),
 		backtestRunner:      defaultBacktestRunner,
 	}
+}
+
+func (s *server) withDB(db *sql.DB) *server {
+	s.users = &sqlUserStore{db: db}
+	return s
+}
+
+func (s *server) withJWT(secret []byte) *server {
+	s.jwtSecret = secret
+	return s
 }
 
 func defaultBacktestRunner() error {
@@ -1638,25 +1657,434 @@ func readClient(conn net.Conn, rd *bufio.Reader, pongCh chan<- []byte) {
 	}
 }
 
+// requireAuth validates the JWT from Authorization: Bearer or auth_token cookie.
+// Roles is optional; if provided the token role must be in the list.
+func (s *server) requireAuth(roles ...string) func(http.HandlerFunc) http.HandlerFunc {
+	return func(next http.HandlerFunc) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			if len(s.jwtSecret) == 0 {
+				next(w, r)
+				return
+			}
+			tokenStr := ""
+			if auth := r.Header.Get("Authorization"); strings.HasPrefix(auth, "Bearer ") {
+				tokenStr = strings.TrimPrefix(auth, "Bearer ")
+			} else if c, err := r.Cookie("auth_token"); err == nil {
+				tokenStr = c.Value
+			}
+			if tokenStr == "" {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			claims, err := validateToken(s.jwtSecret, tokenStr)
+			if err != nil {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			if len(roles) > 0 {
+				allowed := false
+				for _, role := range roles {
+					if claims.Role == role {
+						allowed = true
+						break
+					}
+				}
+				if !allowed {
+					http.Error(w, "forbidden", http.StatusForbidden)
+					return
+				}
+			}
+			ctx := context.WithValue(r.Context(), claimsKey, claims)
+			next(w, r.WithContext(ctx))
+		}
+	}
+}
+
+func claimsFromCtx(r *http.Request) *Claims {
+	c, _ := r.Context().Value(claimsKey).(*Claims)
+	return c
+}
+
+type loginRequest struct {
+	Email    string `json:"email"`
+	Password string `json:"password"`
+}
+
+type authResponse struct {
+	AccessToken  string   `json:"access_token"`
+	RefreshToken string   `json:"refresh_token"`
+	User         userInfo `json:"user"`
+}
+
+type userInfo struct {
+	ID    int64  `json:"id"`
+	Email string `json:"email"`
+	Role  string `json:"role"`
+}
+
+func (s *server) handleLogin(w http.ResponseWriter, r *http.Request) {
+	s.cors(w, r)
+	if r.Method == http.MethodOptions {
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.users == nil || len(s.jwtSecret) == 0 {
+		http.Error(w, "auth not configured", http.StatusServiceUnavailable)
+		return
+	}
+	var req loginRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	u, err := s.users.getUserByEmail(req.Email)
+	if err != nil || u == nil || !u.PasswordHash.Valid {
+		http.Error(w, "invalid email or password", http.StatusUnauthorized)
+		return
+	}
+	if bcrypt.CompareHashAndPassword([]byte(u.PasswordHash.String), []byte(req.Password)) != nil {
+		http.Error(w, "invalid email or password", http.StatusUnauthorized)
+		return
+	}
+	access, refresh, err := generateTokenPair(s.jwtSecret, u.ID, u.Email, u.Role)
+	if err != nil {
+		http.Error(w, "token generation failed", http.StatusInternalServerError)
+		return
+	}
+	if err := s.users.updateRefreshToken(u.ID, refresh); err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, authResponse{
+		AccessToken:  access,
+		RefreshToken: refresh,
+		User:         userInfo{ID: u.ID, Email: u.Email, Role: u.Role},
+	})
+}
+
+type refreshRequest struct {
+	RefreshToken string `json:"refresh_token"`
+}
+
+func (s *server) handleRefresh(w http.ResponseWriter, r *http.Request) {
+	s.cors(w, r)
+	if r.Method == http.MethodOptions {
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.users == nil || len(s.jwtSecret) == 0 {
+		http.Error(w, "auth not configured", http.StatusServiceUnavailable)
+		return
+	}
+	var req refreshRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	// Decode the refresh token to extract user ID (it's opaque — look up by hash).
+	// We search by hash directly.
+	if req.RefreshToken == "" {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	// Find user whose refresh_token_hash matches.
+	users, err := s.users.listUsers()
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	var matched *User
+	for i := range users {
+		ok, err := s.users.validateRefreshToken(users[i].ID, req.RefreshToken)
+		if err == nil && ok {
+			full, err := s.users.getUserByID(users[i].ID)
+			if err == nil && full != nil {
+				matched = full
+			}
+			break
+		}
+	}
+	if matched == nil {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	access, newRefresh, err := generateTokenPair(s.jwtSecret, matched.ID, matched.Email, matched.Role)
+	if err != nil {
+		http.Error(w, "token generation failed", http.StatusInternalServerError)
+		return
+	}
+	if err := s.users.updateRefreshToken(matched.ID, newRefresh); err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, map[string]string{
+		"access_token":  access,
+		"refresh_token": newRefresh,
+	})
+}
+
+func (s *server) handleLogout(w http.ResponseWriter, r *http.Request) {
+	s.cors(w, r)
+	if r.Method == http.MethodOptions {
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.users == nil {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	var req refreshRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err == nil && req.RefreshToken != "" {
+		users, err := s.users.listUsers()
+		if err == nil {
+			for i := range users {
+				ok, err := s.users.validateRefreshToken(users[i].ID, req.RefreshToken)
+				if err == nil && ok {
+					_ = s.users.updateRefreshToken(users[i].ID, "")
+					break
+				}
+			}
+		}
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+type acceptInviteRequest struct {
+	Token    string `json:"token"`
+	Password string `json:"password"`
+}
+
+func validatePassword(p string) error {
+	if len(p) < 8 {
+		return fmt.Errorf("password must be at least 8 characters")
+	}
+	hasUpper, hasDigit := false, false
+	for _, c := range p {
+		if c >= 'A' && c <= 'Z' {
+			hasUpper = true
+		}
+		if c >= '0' && c <= '9' {
+			hasDigit = true
+		}
+	}
+	if !hasUpper {
+		return fmt.Errorf("password must contain at least one uppercase letter")
+	}
+	if !hasDigit {
+		return fmt.Errorf("password must contain at least one number")
+	}
+	return nil
+}
+
+func (s *server) handleAcceptInvite(w http.ResponseWriter, r *http.Request) {
+	s.cors(w, r)
+	if r.Method == http.MethodOptions {
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.users == nil || len(s.jwtSecret) == 0 {
+		http.Error(w, "auth not configured", http.StatusServiceUnavailable)
+		return
+	}
+	var req acceptInviteRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	if err := validatePassword(req.Password); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	u, err := s.users.getUserByInviteToken(req.Token)
+	if err != nil || u == nil {
+		http.Error(w, "invalid or expired invite token", http.StatusBadRequest)
+		return
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if err := s.users.activateUser(u.ID, string(hash)); err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	access, refresh, err := generateTokenPair(s.jwtSecret, u.ID, u.Email, u.Role)
+	if err != nil {
+		http.Error(w, "token generation failed", http.StatusInternalServerError)
+		return
+	}
+	if err := s.users.updateRefreshToken(u.ID, refresh); err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, authResponse{
+		AccessToken:  access,
+		RefreshToken: refresh,
+		User:         userInfo{ID: u.ID, Email: u.Email, Role: u.Role},
+	})
+}
+
+type userListEntry struct {
+	ID          int64      `json:"id"`
+	Email       string     `json:"email"`
+	Role        string     `json:"role"`
+	Status      string     `json:"status"`
+	ActivatedAt *time.Time `json:"activated_at,omitempty"`
+	CreatedAt   time.Time  `json:"created_at"`
+}
+
+func (s *server) handleAdminUsers(w http.ResponseWriter, r *http.Request) {
+	s.cors(w, r)
+	if r.Method == http.MethodOptions {
+		return
+	}
+	if s.users == nil {
+		http.Error(w, "auth not configured", http.StatusServiceUnavailable)
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		users, err := s.users.listUsers()
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		out := make([]userListEntry, 0, len(users))
+		for _, u := range users {
+			e := userListEntry{
+				ID:        u.ID,
+				Email:     u.Email,
+				Role:      u.Role,
+				Status:    "pending",
+				CreatedAt: u.CreatedAt,
+			}
+			if u.ActivatedAt.Valid {
+				e.Status = "active"
+				t := u.ActivatedAt.Time
+				e.ActivatedAt = &t
+			}
+			out = append(out, e)
+		}
+		writeJSON(w, out)
+	case http.MethodPost:
+		var req struct {
+			Email string `json:"email"`
+			Role  string `json:"role"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		if req.Email == "" || req.Role == "" {
+			http.Error(w, "email and role required", http.StatusBadRequest)
+			return
+		}
+		switch req.Role {
+		case "admin", "trader", "viewer":
+		default:
+			http.Error(w, "role must be admin, trader, or viewer", http.StatusBadRequest)
+			return
+		}
+		u, err := s.users.createUser(req.Email, req.Role)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		appURL := os.Getenv("SPREADARA_APP_URL")
+		inviteURL := fmt.Sprintf("%s/accept-invite?token=%s", appURL, u.InviteToken.String)
+		log.Printf("invite_created email=%s role=%s invite_url=%s", u.Email, u.Role, inviteURL)
+		if err := sendInviteEmail(u.Email, u.InviteToken.String); err != nil {
+			log.Printf("warn: send_invite_email failed: %v", err)
+		}
+		writeJSON(w, userListEntry{
+			ID:        u.ID,
+			Email:     u.Email,
+			Role:      u.Role,
+			Status:    "pending",
+			CreatedAt: u.CreatedAt,
+		})
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func (s *server) handleAdminDeleteUser(w http.ResponseWriter, r *http.Request) {
+	s.cors(w, r)
+	if r.Method == http.MethodOptions {
+		return
+	}
+	if r.Method != http.MethodDelete {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.users == nil {
+		http.Error(w, "auth not configured", http.StatusServiceUnavailable)
+		return
+	}
+	idStr := strings.TrimPrefix(r.URL.Path, "/api/admin/users/")
+	id, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil || id <= 0 {
+		http.Error(w, "invalid user id", http.StatusBadRequest)
+		return
+	}
+	if c := claimsFromCtx(r); c != nil && c.UserID == id {
+		http.Error(w, "cannot delete yourself", http.StatusBadRequest)
+		return
+	}
+	if err := s.users.deleteUser(id); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (s *server) routes() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/api/snapshot", s.handleSnapshot)
-	mux.HandleFunc("/api/trades", s.handleTrades)
-	mux.HandleFunc("/api/pnl/daily", s.handlePnlDaily)
-	mux.HandleFunc("/api/events", s.handleEvents)
-	mux.HandleFunc("/api/spreads", s.handleSpreads)
-	mux.HandleFunc("/api/inventory", s.handleInventory)
-	mux.HandleFunc("/api/orders", s.handleOrders)
-	mux.HandleFunc("/api/funding-rate", s.handleFundingRate)
-	mux.HandleFunc("/api/calibration", s.handleCalibration)
-	mux.HandleFunc("/api/calibration/run", s.handleCalibrationRun)
-	mux.HandleFunc("/api/backtest", s.handleBacktest)
-	mux.HandleFunc("/api/backtest/run", s.handleBacktestRun)
-	mux.HandleFunc("/api/alerts", s.handleAlerts)
-	mux.HandleFunc("/api/logs", s.handleLogs)
-	mux.HandleFunc("/api/config", s.handleConfig)
+
+	any := s.requireAuth("admin", "trader", "viewer")
+	admin := s.requireAuth("admin")
+
+	// Public — no auth required.
 	mux.HandleFunc("/api/v5/status", s.handleStatus)
+	mux.HandleFunc("/api/snapshot", s.handleSnapshot)
+	mux.HandleFunc("/api/auth/login", s.handleLogin)
+	mux.HandleFunc("/api/auth/refresh", s.handleRefresh)
+	mux.HandleFunc("/api/auth/logout", s.handleLogout)
+	mux.HandleFunc("/api/auth/accept-invite", s.handleAcceptInvite)
 	mux.HandleFunc("/ws", s.handleWS)
-	// TODO(phase 7): auth.
+
+	// Authenticated — any role.
+	mux.HandleFunc("/api/trades", any(s.handleTrades))
+	mux.HandleFunc("/api/pnl/daily", any(s.handlePnlDaily))
+	mux.HandleFunc("/api/events", any(s.handleEvents))
+	mux.HandleFunc("/api/spreads", any(s.handleSpreads))
+	mux.HandleFunc("/api/inventory", any(s.handleInventory))
+	mux.HandleFunc("/api/orders", any(s.handleOrders))
+	mux.HandleFunc("/api/funding-rate", any(s.handleFundingRate))
+	mux.HandleFunc("/api/calibration", any(s.handleCalibration))
+	mux.HandleFunc("/api/backtest", any(s.handleBacktest))
+	mux.HandleFunc("/api/alerts", any(s.handleAlerts))
+	mux.HandleFunc("/api/logs", any(s.handleLogs))
+
+	// Admin only.
+	mux.HandleFunc("/api/config", admin(s.handleConfig))
+	mux.HandleFunc("/api/calibration/run", admin(s.handleCalibrationRun))
+	mux.HandleFunc("/api/backtest/run", admin(s.handleBacktestRun))
+	mux.HandleFunc("/api/admin/users", admin(s.handleAdminUsers))
+	mux.HandleFunc("/api/admin/users/", admin(s.handleAdminDeleteUser))
+
 	return mux
 }

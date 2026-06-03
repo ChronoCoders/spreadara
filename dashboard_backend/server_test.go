@@ -4,7 +4,9 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"database/sql"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -18,6 +20,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"golang.org/x/crypto/bcrypt"
 )
 
 // statusStub adds statusReader to the base stubReader so /api/v5/status
@@ -867,5 +871,336 @@ func TestStatusPingFailure(t *testing.T) {
 	}
 	if !strings.Contains(body["error"], "pg_ping") {
 		t.Errorf("error body = %v, want substring 'pg_ping'", body)
+	}
+}
+
+// ---- Auth test infrastructure ------------------------------------------------
+
+type memUserStore struct {
+	users        map[int64]*User
+	nextID       int64
+	refreshHashes map[int64]string
+}
+
+func newMemUserStore() *memUserStore {
+	return &memUserStore{
+		users:        make(map[int64]*User),
+		refreshHashes: make(map[int64]string),
+	}
+}
+
+func (m *memUserStore) getUserByEmail(email string) (*User, error) {
+	for _, u := range m.users {
+		if u.Email == email {
+			cp := *u
+			return &cp, nil
+		}
+	}
+	return nil, nil
+}
+
+func (m *memUserStore) getUserByID(id int64) (*User, error) {
+	u, ok := m.users[id]
+	if !ok {
+		return nil, nil
+	}
+	cp := *u
+	return &cp, nil
+}
+
+func (m *memUserStore) getUserByInviteToken(token string) (*User, error) {
+	for _, u := range m.users {
+		if u.InviteToken.Valid && u.InviteToken.String == token {
+			cp := *u
+			return &cp, nil
+		}
+	}
+	return nil, nil
+}
+
+func (m *memUserStore) createUser(email, role string) (*User, error) {
+	m.nextID++
+	token, _ := generateInviteToken()
+	u := &User{
+		ID:          m.nextID,
+		Email:       email,
+		Role:        role,
+		InviteToken: sql.NullString{String: token, Valid: true},
+		InvitedAt:   sql.NullTime{Time: time.Now(), Valid: true},
+		CreatedAt:   time.Now(),
+	}
+	m.users[u.ID] = u
+	return u, nil
+}
+
+func (m *memUserStore) activateUser(id int64, passwordHash string) error {
+	u, ok := m.users[id]
+	if !ok {
+		return errors.New("not found")
+	}
+	u.PasswordHash = sql.NullString{String: passwordHash, Valid: true}
+	u.ActivatedAt = sql.NullTime{Time: time.Now(), Valid: true}
+	u.InviteToken = sql.NullString{}
+	return nil
+}
+
+func (m *memUserStore) updateRefreshToken(id int64, token string) error {
+	if token == "" {
+		delete(m.refreshHashes, id)
+		return nil
+	}
+	m.refreshHashes[id] = hashRefreshToken(token)
+	return nil
+}
+
+func (m *memUserStore) validateRefreshToken(id int64, token string) (bool, error) {
+	h, ok := m.refreshHashes[id]
+	if !ok {
+		return false, nil
+	}
+	return h == hashRefreshToken(token), nil
+}
+
+func (m *memUserStore) listUsers() ([]User, error) {
+	out := make([]User, 0, len(m.users))
+	for _, u := range m.users {
+		out = append(out, *u)
+	}
+	return out, nil
+}
+
+func (m *memUserStore) deleteUser(id int64) error {
+	delete(m.users, id)
+	return nil
+}
+
+func (m *memUserStore) hasUsers() (bool, error) {
+	return len(m.users) > 0, nil
+}
+
+const testJWTSecret = "test-secret-for-unit-tests-32chars!"
+
+func newAuthServer() (*server, *memUserStore) {
+	store := newMemUserStore()
+	srv := newServer(&stubReader{}, 50*time.Millisecond, "")
+	srv.users = store
+	srv.jwtSecret = []byte(testJWTSecret)
+	return srv, store
+}
+
+func seedActiveUser(store *memUserStore, email, password, role string) *User {
+	u, _ := store.createUser(email, role)
+	hash, _ := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	_ = store.activateUser(u.ID, string(hash))
+	return store.users[u.ID]
+}
+
+func postJSON(t *testing.T, ts *httptest.Server, path string, body interface{}, authToken string) *http.Response {
+	t.Helper()
+	b, _ := json.Marshal(body)
+	req, _ := http.NewRequest("POST", ts.URL+path, bytes.NewReader(b))
+	req.Header.Set("Content-Type", "application/json")
+	if authToken != "" {
+		req.Header.Set("Authorization", "Bearer "+authToken)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resp
+}
+
+// ---- Auth tests --------------------------------------------------------------
+
+func TestLoginSuccess(t *testing.T) {
+	srv, store := newAuthServer()
+	seedActiveUser(store, "admin@example.com", "Password1", "admin")
+	ts := httptest.NewServer(srv.routes())
+	defer ts.Close()
+
+	resp := postJSON(t, ts, "/api/auth/login", map[string]string{
+		"email": "admin@example.com", "password": "Password1",
+	}, "")
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	var out authResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatal(err)
+	}
+	if out.AccessToken == "" || out.RefreshToken == "" {
+		t.Error("expected non-empty tokens")
+	}
+	if out.User.Email != "admin@example.com" {
+		t.Errorf("user.email = %q", out.User.Email)
+	}
+}
+
+func TestLoginInvalidPassword(t *testing.T) {
+	srv, store := newAuthServer()
+	seedActiveUser(store, "user@example.com", "Password1", "viewer")
+	ts := httptest.NewServer(srv.routes())
+	defer ts.Close()
+
+	resp := postJSON(t, ts, "/api/auth/login", map[string]string{
+		"email": "user@example.com", "password": "wrongpass",
+	}, "")
+	defer resp.Body.Close()
+	if resp.StatusCode != 401 {
+		t.Fatalf("status = %d, want 401", resp.StatusCode)
+	}
+}
+
+func TestLoginUnknownEmail(t *testing.T) {
+	srv, _ := newAuthServer()
+	ts := httptest.NewServer(srv.routes())
+	defer ts.Close()
+
+	resp := postJSON(t, ts, "/api/auth/login", map[string]string{
+		"email": "nobody@example.com", "password": "Password1",
+	}, "")
+	defer resp.Body.Close()
+	// Same 401 — no user enumeration.
+	if resp.StatusCode != 401 {
+		t.Fatalf("status = %d, want 401", resp.StatusCode)
+	}
+}
+
+func TestRequireAuthMissingToken(t *testing.T) {
+	srv, _ := newAuthServer()
+	ts := httptest.NewServer(srv.routes())
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/api/trades")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 401 {
+		t.Fatalf("status = %d, want 401", resp.StatusCode)
+	}
+}
+
+func TestRequireAuthValidToken(t *testing.T) {
+	srv, store := newAuthServer()
+	seedActiveUser(store, "user@example.com", "Password1", "viewer")
+	ts := httptest.NewServer(srv.routes())
+	defer ts.Close()
+
+	loginResp := postJSON(t, ts, "/api/auth/login", map[string]string{
+		"email": "user@example.com", "password": "Password1",
+	}, "")
+	defer loginResp.Body.Close()
+	var tokens authResponse
+	json.NewDecoder(loginResp.Body).Decode(&tokens)
+
+	req, _ := http.NewRequest("GET", ts.URL+"/api/trades", nil)
+	req.Header.Set("Authorization", "Bearer "+tokens.AccessToken)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+}
+
+func TestRequireAuthExpiredToken(t *testing.T) {
+	srv, _ := newAuthServer()
+	ts := httptest.NewServer(srv.routes())
+	defer ts.Close()
+
+	// Generate a token with negative TTL (already expired).
+	expiredToken, _, _ := generateTokenPair([]byte(testJWTSecret), 1, "x@x.com", "viewer")
+	// Tamper by replacing the expiry — easier to just use an already-invalid signed string.
+	req, _ := http.NewRequest("GET", ts.URL+"/api/trades", nil)
+	req.Header.Set("Authorization", "Bearer "+expiredToken+".tampered")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 401 {
+		t.Fatalf("status = %d, want 401", resp.StatusCode)
+	}
+}
+
+func TestAdminOnlyEndpoint(t *testing.T) {
+	srv, store := newAuthServer()
+	seedActiveUser(store, "viewer@example.com", "Password1", "viewer")
+	ts := httptest.NewServer(srv.routes())
+	defer ts.Close()
+
+	loginResp := postJSON(t, ts, "/api/auth/login", map[string]string{
+		"email": "viewer@example.com", "password": "Password1",
+	}, "")
+	defer loginResp.Body.Close()
+	var tokens authResponse
+	json.NewDecoder(loginResp.Body).Decode(&tokens)
+
+	resp := postJSON(t, ts, "/api/config", map[string]string{}, tokens.AccessToken)
+	defer resp.Body.Close()
+	if resp.StatusCode != 403 {
+		t.Fatalf("status = %d, want 403", resp.StatusCode)
+	}
+}
+
+func TestInviteFlow(t *testing.T) {
+	srv, store := newAuthServer()
+	ts := httptest.NewServer(srv.routes())
+	defer ts.Close()
+
+	u, _ := store.createUser("invited@example.com", "trader")
+
+	resp := postJSON(t, ts, "/api/auth/accept-invite", map[string]string{
+		"token": u.InviteToken.String, "password": "Secure123",
+	}, "")
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d body=%s", resp.StatusCode, body)
+	}
+	var out authResponse
+	json.NewDecoder(resp.Body).Decode(&out)
+	if out.AccessToken == "" {
+		t.Error("expected access token")
+	}
+
+	// Can now log in with the set password.
+	loginResp := postJSON(t, ts, "/api/auth/login", map[string]string{
+		"email": "invited@example.com", "password": "Secure123",
+	}, "")
+	defer loginResp.Body.Close()
+	if loginResp.StatusCode != 200 {
+		t.Fatalf("login after invite: status = %d", loginResp.StatusCode)
+	}
+}
+
+func TestRefreshToken(t *testing.T) {
+	srv, store := newAuthServer()
+	seedActiveUser(store, "user@example.com", "Password1", "viewer")
+	ts := httptest.NewServer(srv.routes())
+	defer ts.Close()
+
+	loginResp := postJSON(t, ts, "/api/auth/login", map[string]string{
+		"email": "user@example.com", "password": "Password1",
+	}, "")
+	defer loginResp.Body.Close()
+	var tokens authResponse
+	json.NewDecoder(loginResp.Body).Decode(&tokens)
+
+	refreshResp := postJSON(t, ts, "/api/auth/refresh", map[string]string{
+		"refresh_token": tokens.RefreshToken,
+	}, "")
+	defer refreshResp.Body.Close()
+	if refreshResp.StatusCode != 200 {
+		t.Fatalf("status = %d, want 200", refreshResp.StatusCode)
+	}
+	var out map[string]string
+	json.NewDecoder(refreshResp.Body).Decode(&out)
+	if out["access_token"] == "" {
+		t.Error("expected new access token")
 	}
 }

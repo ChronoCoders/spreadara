@@ -3,6 +3,7 @@
 
 import { useState, type ReactNode } from 'react';
 import { NavLink } from 'react-router-dom';
+import { getCurrentUser, logout } from '../auth';
 
 interface NavItem {
   to: string;
@@ -31,7 +32,7 @@ const i = (path: ReactNode) => (
   </svg>
 );
 
-const ICONS = {
+const ICONS: Record<string, ReactNode> = {
   home: i(<><path d="M3 11l9-8 9 8" /><path d="M5 10v10h14V10" /></>),
   sliders: i(<><line x1="4" y1="7" x2="20" y2="7" /><line x1="4" y1="12" x2="20" y2="12" /><line x1="4" y1="17" x2="20" y2="17" /><circle cx="9" cy="7" r="2" /><circle cx="15" cy="12" r="2" /><circle cx="8" cy="17" r="2" /></>),
   chart: i(<><line x1="4" y1="20" x2="20" y2="20" /><rect x="6" y="12" width="3" height="6" /><rect x="11" y="8" width="3" height="10" /><rect x="16" y="4" width="3" height="14" /></>),
@@ -51,6 +52,8 @@ const ICONS = {
   terminal: i(<><polyline points="5 8 9 12 5 16" /><line x1="12" y1="16" x2="19" y2="16" /></>),
   wrench: i(<path d="M14.5 3a4 4 0 0 0-3.9 5L3 15.6 5.4 18l7.6-7.6a4 4 0 0 0 5-3.9 4 4 0 0 0-.4-1.7l-2.4 2.4-2-.6-.6-2 2.4-2.4A4 4 0 0 0 14.5 3z" />),
   server: i(<><rect x="3" y="4" width="18" height="6" rx="1" /><rect x="3" y="14" width="18" height="6" rx="1" /><circle cx="7" cy="7" r="0.5" /><circle cx="7" cy="17" r="0.5" /></>),
+  users: i(<><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M23 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" /></>),
+  logout: i(<><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><polyline points="16 17 21 12 16 7" /><line x1="21" y1="12" x2="9" y2="12" /></>),
 };
 
 const NAV: NavItem[] = [
@@ -77,6 +80,8 @@ const NAV: NavItem[] = [
 
 export function Sidebar() {
   const [open, setOpen] = useState(false);
+  const user = getCurrentUser();
+  const isAdmin = user?.role === 'admin';
 
   return (
     <>
@@ -114,9 +119,37 @@ export function Sidebar() {
               <span className="sidebar-label">{n.label}</span>
             </NavLink>
           ))}
+          {isAdmin && (
+            <NavLink
+              to="/admin/users"
+              className={({ isActive }) =>
+                `sidebar-link ${isActive ? 'sidebar-link-active' : ''}`
+              }
+              onClick={() => setOpen(false)}
+            >
+              <span className="sidebar-icon">{ICONS.users}</span>
+              <span className="sidebar-label">Users</span>
+            </NavLink>
+          )}
         </nav>
 
-        <div className="sidebar-version">v0.11.9</div>
+        <div style={{ marginTop: 'auto', padding: '8px 0' }}>
+          {user && (
+            <div style={{ padding: '6px 16px', fontSize: '11px', color: 'rgba(255,255,255,0.3)', letterSpacing: '0.04em', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {user.email}
+            </div>
+          )}
+          <button
+            onClick={() => logout('/login')}
+            className="sidebar-link"
+            style={{ width: '100%', background: 'none', border: 'none', cursor: 'pointer', textAlign: 'left' }}
+          >
+            <span className="sidebar-icon">{ICONS.logout}</span>
+            <span className="sidebar-label">Sign out</span>
+          </button>
+        </div>
+
+        <div className="sidebar-version">v0.12.1</div>
       </aside>
     </>
   );

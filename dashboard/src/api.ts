@@ -244,14 +244,36 @@ function parseArray<T>(raw: unknown, ctx: string, item: (v: unknown) => T): T[] 
   return asArray(raw, ctx).map(item);
 }
 
+function authHeaders(): Record<string, string> {
+  const token = (window as any).__spreadara_getToken?.();
+  if (token) return { Authorization: `Bearer ${token}` };
+  return {};
+}
+
+async function fetchWithAuth(input: string, init: RequestInit = {}): Promise<Response> {
+  const headers = { ...authHeaders(), ...(init.headers as Record<string, string> | undefined) };
+  let r = await fetch(input, { ...init, headers });
+  if (r.status === 401) {
+    const refreshed = await (window as any).__spreadara_refresh?.();
+    if (refreshed) {
+      const headers2 = { ...authHeaders(), ...(init.headers as Record<string, string> | undefined) };
+      r = await fetch(input, { ...init, headers: headers2 });
+    }
+    if (r.status === 401) {
+      (window as any).__spreadara_logout?.();
+    }
+  }
+  return r;
+}
+
 async function getJSON<T>(path: string, parse: (raw: unknown) => T): Promise<T> {
-  const r = await fetch(`${API_BASE}${path}`);
+  const r = await fetchWithAuth(`${API_BASE}${path}`);
   if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
   return parse(await r.json());
 }
 
 async function postJSON<T>(path: string, parse: (raw: unknown) => T, body?: unknown): Promise<T> {
-  const r = await fetch(`${API_BASE}${path}`, {
+  const r = await fetchWithAuth(`${API_BASE}${path}`, {
     method: 'POST',
     headers: body !== undefined ? { 'Content-Type': 'application/json' } : undefined,
     body: body !== undefined ? JSON.stringify(body) : undefined,
@@ -328,7 +350,7 @@ function parseLogsResponse(raw: unknown): LogsResponse {
 }
 
 async function postText(path: string, body: string): Promise<{ status: string }> {
-  const r = await fetch(`${API_BASE}${path}`, {
+  const r = await fetchWithAuth(`${API_BASE}${path}`, {
     method: 'POST',
     headers: { 'Content-Type': 'text/plain' },
     body,
@@ -338,13 +360,13 @@ async function postText(path: string, body: string): Promise<{ status: string }>
 }
 
 async function getText(path: string): Promise<string> {
-  const r = await fetch(`${API_BASE}${path}`);
+  const r = await fetchWithAuth(`${API_BASE}${path}`);
   if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
   return r.text();
 }
 
 async function del(path: string): Promise<void> {
-  const r = await fetch(`${API_BASE}${path}`, { method: 'DELETE' });
+  const r = await fetchWithAuth(`${API_BASE}${path}`, { method: 'DELETE' });
   if (!r.ok && r.status !== 204) throw new Error(`${r.status} ${r.statusText}`);
 }
 
